@@ -1,0 +1,7 @@
+<brls:Box width="100%" height="100%" axis="column" padding="0">
+    <brls:Header id="header" width="100%" />
+    <brls:Label id="status" width="100%" text="Loading…" marginTop="10" fontSize="22" />
+    <brls:ScrollingFrame id="scroller" width="100%" height="auto">
+        <brls:Box id="grid" width="100%" height="auto" axis="column" padding="16" />
+    </brls:ScrollingFrame>
+</brls:Box>

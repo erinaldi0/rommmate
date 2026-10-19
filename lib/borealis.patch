@@ -1,0 +1,26 @@
+diff --git a/library/lib/extern/nanovg-deko3d/include/nanovg/dk_renderer.hpp b/library/lib/extern/nanovg-deko3d/include/nanovg/dk_renderer.hpp
+index 83b4d3d..138098c 100644
+--- a/library/lib/extern/nanovg-deko3d/include/nanovg/dk_renderer.hpp
++++ b/library/lib/extern/nanovg-deko3d/include/nanovg/dk_renderer.hpp
+@@ -11,6 +11,8 @@
+ #include "framework/CCmdMemRing.h"
+ #include "nanovg.h"
+ 
++#include <optional>
++
+ // Create flags
+ enum NVGcreateFlags {
+     // Flag indicating if geometry based anti-aliasing is used (may not be needed when using MSAA).
+diff --git a/library/lib/platforms/switch/swkbd.cpp b/library/lib/platforms/switch/swkbd.cpp
+index 1a11b72..4dd4ba3 100644
+--- a/library/lib/platforms/switch/swkbd.cpp
++++ b/library/lib/platforms/switch/swkbd.cpp
+@@ -39,7 +39,7 @@ static SwkbdConfig createSwkbdBaseConfig(std::string headerText, std::string sub
+     swkbdConfigSetSubText(&config, subText.c_str());
+     swkbdConfigSetStringLenMax(&config, maxStringLength);
+     swkbdConfigSetInitialText(&config, initialText.c_str());
+-    swkbdConfigSetStringLenMaxExt(&config, 1);
++    swkbdConfigSetStringLenMin(&config, 1); // renamed from SetStringLenMaxExt in libnx
+     swkbdConfigSetBlurBackground(&config, true);
+ 
+     return config;

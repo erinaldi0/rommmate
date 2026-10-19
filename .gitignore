@@ -1,0 +1,22 @@
+# Build output
+build/
+*.o
+*.elf
+*.map
+*.nro
+*.nso
+*.nacp
+*.nsp
+*.log
+
+# Merged-in Borealis bundled resources (copied from lib/borealis into romfs/
+# at build time by the `borealis-resources` Make target). Our own tracked
+# assets are romfs/xml/main.xml and romfs/posters/.
+romfs/i18n/
+romfs/img/
+romfs/inter/
+romfs/material/
+romfs/shaders/
+romfs/xml/activity/
+romfs/xml/tabs/
+romfs/xml/views/
