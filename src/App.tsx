@@ -1,13 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { hasConfig, loadConfig, saveConfig, type Config } from './config';
+import { configureCovers } from './covers';
 import { onFatalError } from './errors';
 import { RommClient, type RommGame } from './romm';
 import { MOCK_GAMES } from './mock';
 import { FatalError } from './components/FatalError';
 import { SettingsScreen } from './components/SettingsScreen';
 import { LibraryGrid } from './components/LibraryGrid';
+import { GameDetail } from './components/GameDetail';
 
-type Route = 'settings' | 'library';
+type Route = 'settings' | 'library' | 'detail';
 
 export function App() {
 	const [cfg, setCfg] = useState<Config>(loadConfig);
@@ -18,10 +20,19 @@ export function App() {
 	const [fatal, setFatal] = useState<string | null>(null);
 	/** True while the library shows mocked data instead of a real RomM server. */
 	const [demo, setDemo] = useState(false);
+	/** The game the detail screen is showing. */
+	const [detail, setDetail] = useState<RommGame | null>(null);
 
 	// Anything that blows up while rendering is surfaced on screen instead of
 	// leaving a half-drawn frame behind.
 	useEffect(() => onFatalError(setFatal), []);
+
+	// The artwork is fetched by `covers.ts`, which cannot read the token from
+	// the URL — it is handed over here, and kept in sync with the saved
+	// credentials (the app also auto-connects with a stored config).
+	useEffect(() => {
+		configureCovers(cfg.token);
+	}, [cfg.token]);
 
 	const connect = useCallback(async (config: Config) => {
 		setBusy(true);
@@ -62,6 +73,7 @@ export function App() {
 		saveConfig(next);
 		setCfg(next);
 		setDemo(false);
+		configureCovers(next.token);
 		void connect(next);
 	}
 
@@ -79,17 +91,50 @@ export function App() {
 		setStatus('');
 	}
 
+	function openDetail(game: RommGame) {
+		setDetail(game);
+		setRoute('detail');
+	}
+
+	function closeDetail() {
+		setDetail(null);
+		setRoute('library');
+	}
+
 	if (fatal !== null) return <FatalError message={fatal} />;
 
-	return route === 'settings' ? (
-		<SettingsScreen
-			initial={cfg}
-			status={status}
-			busy={busy}
-			onSave={saveAndConnect}
-			onDemo={startDemo}
-		/>
-	) : (
-		<LibraryGrid games={games} status={status} demo={demo} onBack={backToSettings} />
+	if (route === 'settings') {
+		return (
+			<SettingsScreen
+				initial={cfg}
+				status={status}
+				busy={busy}
+				onSave={saveAndConnect}
+				onDemo={startDemo}
+			/>
+		);
+	}
+
+	return (
+		<>
+			{/*
+			 * The grid stays mounted underneath the detail screen: its
+			 * scroll position and filter state survive the round trip, and
+			 * the detail screen only has to paint over it.
+			 */}
+			<LibraryGrid
+				games={games}
+				status={status}
+				demo={demo}
+				onBack={backToSettings}
+				onOpen={openDetail}
+				paused={route === 'detail'}
+			/>
+			{route === 'detail' && detail !== null && (
+				// The key makes the screen remount per game, so its state
+				// (which artwork is loading) never leaks into the next one.
+				<GameDetail key={detail.id} game={detail} onBack={closeDetail} />
+			)}
+		</>
 	);
 }

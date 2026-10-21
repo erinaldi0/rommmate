@@ -28,9 +28,14 @@ const defaultInitialDelay = 500;
 const defaultRepeatDelay = 100;
 
 class GamepadLoop {
-	running = false;
-	callbacks = new Map<CallbackConfig, ButtonName>();
-	stickCallbacks = new Map<CallbackConfig, Direction>();
+	#callbacks = new Map<CallbackConfig, ButtonName>();
+	#stickCallbacks = new Map<CallbackConfig, Direction>();
+	/** The pending animation frame, or 0 when the chain is idle. */
+	#frame = 0;
+	/** True while the frame chain is alive. */
+	#running = false;
+	#virtualKeyboard: VirtualKeyboardLike | null = null;
+	#keyboardBound = false;
 	stickDirection = {
 		Up: false,
 		Down: false,
@@ -38,28 +43,68 @@ class GamepadLoop {
 		Right: false,
 	} as Record<Direction, boolean>;
 	buttonState: boolean[] = [];
-	lastFrameTime = 0;
-	#virtualKeyboard: VirtualKeyboardLike | null = null;
 
 	constructor() {
-		this.#virtualKeyboard = getVirtualKeyboard();
-		this.#virtualKeyboard?.addEventListener(
-			'geometrychange',
-			this.#onVirtualKeyboardGeometryChange,
-		);
+		// Resolved eagerly, but `#keyboard()` retries while it is missing, so
+		// a keyboard that shows up later is still picked up.
+		this.#keyboard();
+	}
+
+	/**
+	 * The on-screen keyboard, if the runtime has one.
+	 *
+	 * The listener is attached once: the keyboard pauses the input loop
+	 * while it covers the screen, because the player is typing then, not
+	 * navigating.
+	 */
+	#keyboard(): VirtualKeyboardLike | null {
+		if (!this.#virtualKeyboard) {
+			this.#virtualKeyboard = getVirtualKeyboard();
+			if (this.#virtualKeyboard && !this.#keyboardBound) {
+				this.#virtualKeyboard.addEventListener(
+					'geometrychange',
+					this.#onVirtualKeyboardGeometryChange,
+				);
+				this.#keyboardBound = true;
+			}
+		}
+		return this.#virtualKeyboard;
+	}
+
+	/** The first connected controller, or null when there is none. */
+	#readGamepad(): Gamepad | null {
+		const pads = navigator.getGamepads();
+		for (const pad of pads) {
+			if (pad) return pad;
+		}
+		return null;
+	}
+
+	#schedule() {
+		if (this.#frame) return;
+		this.#frame = requestAnimationFrame(this.loop);
+	}
+
+	#stop() {
+		this.#running = false;
+		if (this.#frame) {
+			cancelAnimationFrame(this.#frame);
+			this.#frame = 0;
+		}
 	}
 
 	queueLoop() {
-		if (this.running) return;
-		if ((this.#virtualKeyboard?.boundingRect.height ?? 0) > 0) return;
-		this.running = true;
-		this.lastFrameTime = performance.now();
-		queueMicrotask(this.loop);
+		if (this.#running) return;
+		const vk = this.#keyboard();
+		// The on-screen keyboard owns the input while it is open.
+		if ((vk?.boundingRect.height ?? 0) > 0) return;
+		this.#running = true;
+		this.#schedule();
 	}
 
 	#onVirtualKeyboardGeometryChange = () => {
-		if ((this.#virtualKeyboard?.boundingRect.height ?? 0) > 0) {
-			this.running = false;
+		if ((this.#keyboard()?.boundingRect.height ?? 0) > 0) {
+			this.#stop();
 		} else {
 			this.queueLoop();
 		}
@@ -95,44 +140,61 @@ class GamepadLoop {
 	}
 
 	loop = () => {
-		if (
-			(this.callbacks.size === 0 && this.stickCallbacks.size === 0) ||
-			!this.running
-		)
-			return;
+		this.#frame = 0;
 
-		const [gp] = navigator.getGamepads();
-		if (!gp) return;
+		if (this.#callbacks.size === 0 && this.#stickCallbacks.size === 0) {
+			this.#running = false;
+			return;
+		}
 
 		const currentTime = performance.now();
+		const gp = this.#readGamepad();
 
-		// Handle button callbacks
-		for (const [config, button] of this.callbacks) {
-			const buttonNum = Button[button];
-			const wasPressed = this.buttonState[buttonNum];
-			const isPressed = gp.buttons[buttonNum]?.pressed;
+		/*
+		 * A missing controller is not fatal: nx.js returns an empty array
+		 * when nothing is plugged in, and the player may connect a
+		 * controller at any moment. The chain keeps running so the input
+		 * comes back on its own.
+		 */
+		if (gp) {
+			// Handle button callbacks
+			for (const [config, button] of this.#callbacks) {
+				const buttonNum = Button[button];
+				const wasPressed = this.buttonState[buttonNum] ?? false;
+				const isPressed = gp.buttons[buttonNum]?.pressed ?? false;
 
-			if (!wasPressed && isPressed) {
-				this.buttonState[buttonNum] = true;
-			} else if (wasPressed && !isPressed) {
-				this.buttonState[buttonNum] = false;
+				if (!wasPressed && isPressed) {
+					this.buttonState[buttonNum] = true;
+				} else if (wasPressed && !isPressed) {
+					this.buttonState[buttonNum] = false;
+				}
+
+				this.#handleCallback(config, wasPressed, isPressed, currentTime);
 			}
 
-			this.#handleCallback(config, wasPressed, isPressed, currentTime);
+			const currentStickDirection = this.#getCurrentStickDirection(gp);
+
+			// Handle stick callbacks
+			for (const [config, direction] of this.#stickCallbacks) {
+				const wasPressed = this.stickDirection[direction];
+				const isPressed = currentStickDirection[direction];
+				this.#handleCallback(config, wasPressed, isPressed, currentTime);
+			}
+
+			this.stickDirection = currentStickDirection;
+		} else {
+			// A controller that goes away must not leave a button stuck
+			// in the "pressed" state, or the next press is not an edge.
+			this.buttonState = [];
+			this.stickDirection = {
+				Up: false,
+				Down: false,
+				Left: false,
+				Right: false,
+			};
 		}
 
-		const currentStickDirection = this.#getCurrentStickDirection(gp);
-
-		// Handle stick callbacks
-		for (const [config, direction] of this.stickCallbacks) {
-			const wasPressed = this.stickDirection[direction];
-			const isPressed = currentStickDirection[direction];
-			this.#handleCallback(config, wasPressed, isPressed, currentTime);
-		}
-
-		this.stickDirection = currentStickDirection;
-
-		requestAnimationFrame(this.loop);
+		this.#schedule();
 	};
 
 	add(
@@ -150,7 +212,7 @@ class GamepadLoop {
 			lastTriggerTime: 0,
 			hasMetRepeatDelay: false,
 		};
-		this.callbacks.set(config, button);
+		this.#callbacks.set(config, button);
 		this.queueLoop();
 	}
 
@@ -170,25 +232,26 @@ class GamepadLoop {
 			lastTriggerTime: 0,
 			hasMetRepeatDelay: false,
 		};
-		this.stickCallbacks.set(config, direction);
+		this.#stickCallbacks.set(config, direction);
 		this.queueLoop();
 	}
 
+	/**
+	 * Remove a callback.
+	 *
+	 * Every registration of the callback is removed: the same function can
+	 * be registered for several buttons (or for a button and a direction),
+	 * and a leftover registration would keep firing forever.
+	 */
 	delete(cb: () => void) {
-		for (const [config] of this.callbacks) {
-			if (config.callback === cb) {
-				this.callbacks.delete(config);
-				break;
-			}
+		for (const [config] of this.#callbacks) {
+			if (config.callback === cb) this.#callbacks.delete(config);
 		}
-		for (const [config] of this.stickCallbacks) {
-			if (config.callback === cb) {
-				this.stickCallbacks.delete(config);
-				break;
-			}
+		for (const [config] of this.#stickCallbacks) {
+			if (config.callback === cb) this.#stickCallbacks.delete(config);
 		}
-		if (this.callbacks.size === 0 && this.stickCallbacks.size === 0) {
-			this.running = false;
+		if (this.#callbacks.size === 0 && this.#stickCallbacks.size === 0) {
+			this.#stop();
 		}
 	}
 

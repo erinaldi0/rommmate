@@ -27,3 +27,6 @@ keys.ini
 
 # OS cruft
 .DS_Store
+
+# OpenCode harness
+.opencode/

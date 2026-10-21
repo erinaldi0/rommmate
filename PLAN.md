@@ -86,18 +86,39 @@ rommmate/
 │  ├─ nxjs.ini              # [v8]/[renderer]/[runtime] tuning; [runtime] version baked by packager
 │  └─ assets/               # default poster, icon
 ├─ src/
-│  ├─ main.tsx              # entry: render(<App/>, screen); global error overlay; gamepad boot
-│  ├─ App.tsx               # screen state machine: Settings ↔ Library
+│  ├─ main.tsx              # entry: render(<App/>, screen); global error overlay
+│  ├─ App.tsx               # route state machine: Settings ↔ Library ↔ Detail
 │  ├─ romm.ts               # RommClient: typed fetch + JSON parsing (/api/library, /api/roms)
 │  ├─ config.ts             # baseUrl + token via localStorage (Save Data)
 │  ├─ mock.ts               # mocked library used by the "Demo mode" entry
 │  ├─ covers.ts             # cover URL → fetch → cache to sdmc:/… → <Image src>
-│  ├─ gamepad.ts            # Web Gamepad polling → focus/selection state; touch-scroll
+│  ├─ theme.ts              # colours, spacing, radii, type scale (canvas has no CSS)
+│  ├─ text.ts               # measure / wrap / truncate (react-tela <Text> cannot do it)
+│  ├─ vk.ts                 # structural type for the runtime's on-screen keyboard
+│  ├─ version.ts            # build id (stamped by tools/build.mjs)
+│  ├─ errors.ts             # global error trap → on-screen FatalError
+│  ├─ hooks/
+│  │  ├─ use-gamepad.ts     # rAF input loop: edge-triggered buttons, auto-repeat, stick
+│  │  ├─ use-drag-scroll.ts # touch drag → scroll offset
+│  │  └─ use-tick.ts        # coarse interval re-render (loading feedback)
 │  └─ components/
-│     ├─ Header.tsx         # title + library name + status line
-│     ├─ CoverGrid.tsx      # tile grid, row-culled viewport (no <Group>)
+│     ├─ Header.tsx         # title + status line + build stamp (shared by every screen)
+│     ├─ HintBar.tsx        # context sensitive button hints (shared)
+│     ├─ LibraryGrid.tsx    # the library screen: filter bar + cover grid
 │     ├─ CoverTile.tsx      # <Image> cover + <Text> title, focus ring
-│     └─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row
+│     ├─ CoverImage.tsx     # <Image> with a safe failure mode (placeholder instead of a crash)
+│     ├─ FilterBar.tsx      # platform chips + search chip, horizontally scrollable
+│     ├─ GameDetail.tsx     # artwork, screenshot, metadata, summary
+│     ├─ EmptyState.tsx     # "nothing here" placeholder
+│     ├─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row
+│     └─ FatalError.tsx     # last-resort error screen
+├─ tools/
+│  ├─ build.mjs             # esbuild → romfs/main.js + build id stamping
+│  └─ preview/              # browser preview harness (dev-only, not shipped)
+│     ├─ entry.tsx          # renders the real app into a <canvas>, fakes gamepad + keyboard
+│     ├─ build.mjs          # esbuild bundle for the harness
+│     ├─ raf-shim.ts        # headless Chrome only paints one frame — keep rAF alive
+│     └─ bands.mjs / probe.mjs / ascii.mjs   # layout inspection from the terminal
 └─ (output) rommate.nro / rommate.nsp
 ```
 
@@ -158,10 +179,41 @@ rommmate/
 - **Bundle/heap**: React + react-tela is small, but keep an eye on the V8 heap
   in applet mode if we ever ship NRO-only (`[memory] heap_limit` clamps there).
 
+## Browser preview harness (dev-only)
+
+The app is a canvas app, so "does this look right?" is a question a
+screenshot answers better than a mental model. `tools/preview/` renders the
+**real** `src/` components into a `<canvas>` in a normal browser:
+
+- `?view=demo|filter|empty|detail` — a starting state per screen.
+- `?sim=Up,A,B` — simulated button presses (the harness installs a fake
+  Web Gamepad and a fake on-screen keyboard; `?vktext=mario` pre-fills the
+  search field).
+- The trace of what the app did is mirrored into the document title, and
+  `bands.mjs` / `probe.mjs` / `ascii.mjs` read the screenshot back, so the
+  layout can be checked from the terminal.
+
+Two headless-Chrome quirks are worth knowing: it only paints **one**
+animation frame per load (so the harness shims `requestAnimationFrame` with a
+timer), and Chrome has its **own** `navigator.virtualKeyboard` (so the
+harness replaces it rather than checking for its presence).
+
 ## Next iteration
 
-- Game detail screen (screenshots, metadata) on A-press.
+Done in v0.5:
+
+- Library screen with a filter bar (platform chips) and a search field that
+  opens the runtime's on-screen keyboard.
+- Game detail screen (cover, screenshot, metadata, summary) on A-press.
+- Cover art is fetched with the API token, cached on the SD card, and drawn
+  from the local copy.
+- Shared `Header` / `HintBar` / `EmptyState` / theme tokens.
+
+Still open:
+
 - `WebSocket` live updates (library changes) — the runtime has it.
-- Search / platform filter row.
-- Real per-game covers at full res + lazy load while scrolling.
+- Lazy loading of the artwork for the rows that are scrolled into view
+  (the covers are fetched eagerly for everything the grid shows today).
+- The RomM list is fetched with a fixed page size — paging through a
+  library of thousands of roms.
 - `--fat` build for distribution without the shared runtime.

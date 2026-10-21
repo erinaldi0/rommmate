@@ -1,22 +1,42 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Image, Rect, Text, useDimensions } from 'react-tela';
+/**
+ * The library screen: a filter bar on top, a grid of covers below.
+ *
+ * Two focus zones share the screen. The grid is the default; the filter bar
+ * is reached by pressing Up from the top row (and left again with Down), so
+ * the vertical stack of the screen doubles as its navigation order.
+ */
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Rect, useDimensions } from 'react-tela';
+import { SwkbdType } from '@nx.js/constants';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
+import { useDragScroll } from '../hooks/use-drag-scroll';
+import { getVirtualKeyboard } from '../vk';
 import { BUILD_ID } from '../version';
+import { colors } from '../theme';
+import { CoverFocusRing, CoverTile, TITLE_BLOCK_H } from './CoverTile';
+import { FilterBar, type FilterChip } from './FilterBar';
+import { Header } from './Header';
+import { HintBar, HintBarBackdrop } from './HintBar';
+import { EmptyState } from './EmptyState';
 import type { RommGame } from '../romm';
 
-const COLS = 4;
-const COVER_W = 260;
-const COVER_H = 347; // 3:4 cover art
-const TILE_H = 400; // cover + title line + row spacing
+const COLS = 5;
+const COVER_W = 216;
+const COVER_H = 288; // 3:4 cover art
 const GAP_X = 24;
+/** Cover + title block + the gap below it. */
+const TILE_H = COVER_H + TITLE_BLOCK_H + 20;
 
-const VIEW_W = 1280;
-const VIEW_X = 0;
-const VIEW_Y = 110;
-const VIEW_H = 520;
+/** Where the scrolling grid starts and ends. */
+const VIEW_Y = 140;
+const VIEW_H = 508;
 
-const GRID_W = COLS * COVER_W + (COLS - 1) * GAP_X; // 1112
-const GRID_X = (VIEW_W - GRID_W) / 2; // 84
+/** Chip that opens the search keyboard. */
+const SEARCH_KEY = '__search';
+/** Chip that clears the platform filter. */
+const ALL_KEY = '__all';
+
+type Zone = 'grid' | 'filter';
 
 interface Props {
 	games: RommGame[];
@@ -25,10 +45,20 @@ interface Props {
 	/** True when the games are mocked rather than fetched from RomM. */
 	demo?: boolean;
 	onBack: () => void;
+	/** Open the detail screen for a game. */
+	onOpen: (game: RommGame) => void;
+	/** True while another screen owns the input (the detail overlay). */
+	paused?: boolean;
 	/** Initial scroll offset (preview harness only; defaults to the top). */
 	initialScroll?: number;
 	/** Initially focused tile index (preview harness only). */
 	initialFocus?: number;
+	/** Initially focused zone (preview harness only). */
+	initialZone?: Zone;
+	/** Initial search query (preview harness only). */
+	initialQuery?: string;
+	/** Initial platform filter (preview harness only). */
+	initialPlatform?: string;
 }
 
 export function LibraryGrid({
@@ -36,57 +66,271 @@ export function LibraryGrid({
 	status,
 	demo = false,
 	onBack,
+	onOpen,
+	paused = false,
 	initialScroll = 0,
 	initialFocus = 0,
+	initialZone = 'grid',
+	initialQuery = '',
+	initialPlatform = '',
 }: Props) {
 	const dims = useDimensions();
-	const [focus, setFocus] = useState(initialFocus);
-	const [scrollTop, setScrollTop] = useState(initialScroll);
-	const [selected, setSelected] = useState('');
 
-	const rows = Math.max(1, Math.ceil(games.length / COLS));
+	const [zone, setZone] = useState<Zone>(initialZone);
+	const [focus, setFocus] = useState(initialFocus);
+	const [chip, setChip] = useState(0);
+	const [platform, setPlatform] = useState(initialPlatform);
+	const [query, setQuery] = useState(initialQuery);
+	const [scrollTop, setScrollTop] = useState(initialScroll);
+
+	// ── filtering ──────────────────────────────────────────────────────────
+	// The search matches the game name only: platforms have their own
+	// chips, and a fuzzy two-axis search would be harder to predict than
+	// it is useful.
+
+	const needle = query.trim().toLowerCase();
+
+	const searched = useMemo(
+		() => (needle === '' ? games : games.filter((g) => g.name.toLowerCase().includes(needle))),
+		[games, needle],
+	);
+
+	const visible = useMemo(
+		() => (platform === '' ? searched : searched.filter((g) => g.platform === platform)),
+		[searched, platform],
+	);
+
+	// Platform names, in a stable order, with the counts of the games that
+	// the *search* leaves behind (so the two filters compose).
+	const platformNames = useMemo(() => {
+		const names = new Set<string>();
+		for (const g of games) if (g.platform !== '') names.add(g.platform);
+		return Array.from(names).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+	}, [games]);
+
+	const chips: FilterChip[] = useMemo(() => {
+		const out: FilterChip[] = [
+			{
+				key: SEARCH_KEY,
+				label: needle === '' ? 'Search' : `Search: ${query.trim()}`,
+				active: needle !== '',
+			},
+			{ key: ALL_KEY, label: 'All', count: searched.length, active: platform === '' },
+		];
+		for (const name of platformNames) {
+			out.push({
+				key: name,
+				label: name,
+				count: searched.filter((g) => g.platform === name).length,
+				active: platform === name,
+			});
+		}
+		return out;
+	}, [needle, query, searched, platform, platformNames]);
+
+	/** The chip that should own the focus when the bar is entered. */
+	const activeChip = useMemo(() => {
+		const i = chips.findIndex((c) => c.active && c.key !== SEARCH_KEY && c.key !== ALL_KEY);
+		return i >= 0 ? i : 1;
+	}, [chips]);
+
+	// ── layout ────────────────────────────────────────────────────────────
+
+	const gridW = COLS * COVER_W + (COLS - 1) * GAP_X;
+	const gridX = (dims.width - gridW) / 2;
+
+	const rows = Math.max(1, Math.ceil(visible.length / COLS));
 	const contentH = rows * TILE_H;
 	const maxScroll = Math.max(0, contentH - VIEW_H);
 
 	// Keep the focused tile inside the visible window.
 	useEffect(() => {
-		const rowTop = Math.floor(focus / COLS) * TILE_H;
-		const rowBottom = rowTop + TILE_H;
-		if (rowTop < scrollTop) setScrollTop(rowTop);
-		else if (rowBottom > scrollTop + VIEW_H) setScrollTop(rowBottom - VIEW_H);
-	}, [focus, contentH, scrollTop]);
+		setScrollTop((current) => {
+			const rowTop = Math.floor(focus / COLS) * TILE_H;
+			const rowBottom = rowTop + TILE_H;
+			if (rowTop < current) return rowTop;
+			if (rowBottom > current + VIEW_H) return rowBottom - VIEW_H;
+			return current;
+		});
+	}, [focus, visible.length]);
 
-	// Grid navigation (d-pad and stick, with auto-repeat for long grids).
-	useDirection('Up', () => setFocus((f) => Math.max(0, f - COLS)), [], true, true);
+	// The filter can shrink the list under the focused tile.
+	useEffect(() => {
+		setFocus((f) => Math.min(Math.max(0, visible.length - 1), f));
+	}, [visible.length]);
+
+	useEffect(() => {
+		setScrollTop((s) => Math.max(0, Math.min(s, maxScroll)));
+	}, [maxScroll]);
+
+	useEffect(() => {
+		setChip((c) => Math.min(Math.max(0, chips.length - 1), c));
+	}, [chips.length]);
+
+	// ── search keyboard ───────────────────────────────────────────────────
+
+	/** The query in flight, or null when no search is open. */
+	const pendingSearch = useRef<string | null>(null);
+
+	const openSearch = useCallback(() => {
+		const vk = getVirtualKeyboard();
+		if (!vk) return;
+		pendingSearch.current = query;
+		vk.type = SwkbdType.Normal;
+		vk.okButtonText = 'Search';
+		vk.value = query;
+		vk.show();
+	}, [query]);
+
+	useEffect(() => {
+		const vk = getVirtualKeyboard();
+		if (!vk) return;
+
+		// The query is only applied when the keyboard is confirmed, so a
+		// cancelled search leaves the library exactly as it was.
+		const commit = () => {
+			if (pendingSearch.current === null) return;
+			pendingSearch.current = null;
+			setQuery(vk.value.trim());
+			setChip(0);
+			setZone('filter');
+		};
+		const cancel = () => {
+			pendingSearch.current = null;
+		};
+		const onGeometry = () => {
+			if (vk.boundingRect.height === 0) commit();
+		};
+
+		vk.addEventListener('submit', commit);
+		vk.addEventListener('cancel', cancel);
+		vk.addEventListener('geometrychange', onGeometry);
+		return () => {
+			vk.removeEventListener('submit', commit);
+			vk.removeEventListener('cancel', cancel);
+			vk.removeEventListener('geometrychange', onGeometry);
+		};
+	}, []);
+
+	const applyChip = useCallback(
+		(item: FilterChip | undefined) => {
+			if (!item) return;
+			if (item.key === SEARCH_KEY) {
+				openSearch();
+				return;
+			}
+			setPlatform(item.key === ALL_KEY ? '' : item.key);
+		},
+		[openSearch],
+	);
+
+	// ── input ─────────────────────────────────────────────────────────────
+
+	/*
+	 * The directions are registered in both zones and decide for themselves
+	 * what they mean: the grid and the filter bar share the same four
+	 * directions, and a direction that is dead in one of them is a trap.
+	 */
+	const gridFocused = !paused && zone === 'grid';
+
+	useDirection(
+		'Up',
+		() => {
+			if (zone === 'filter') return; // already at the top of the screen
+			if (focus < COLS) {
+				// Top row: hand the focus over to the filter bar.
+				setZone('filter');
+				setChip(activeChip);
+				return;
+			}
+			setFocus(focus - COLS);
+		},
+		[zone, focus, activeChip],
+		!paused,
+		true,
+	);
+
 	useDirection(
 		'Down',
-		() => setFocus((f) => Math.min(Math.max(0, games.length - 1), f + COLS)),
-		[games.length],
-		true,
-		true,
-	);
-	useDirection('Left', () => setFocus((f) => Math.max(0, f - 1)), [], true, true);
-	useDirection(
-		'Right',
-		() => setFocus((f) => Math.min(Math.max(0, games.length - 1), f + 1)),
-		[games.length],
-		true,
+		() => {
+			if (zone === 'filter') {
+				// Back to the grid, on the row the filter bar was left from.
+				setZone('grid');
+				return;
+			}
+			setFocus(Math.min(Math.max(0, visible.length - 1), focus + COLS));
+		},
+		[zone, focus, visible.length],
+		!paused,
 		true,
 	);
 
-	// A: select (v0.2 announces the choice; the detail screen comes next).
+	useDirection(
+		'Left',
+		() => {
+			if (zone === 'filter') {
+				setChip((c) => Math.max(0, c - 1));
+				return;
+			}
+			setFocus(Math.max(0, focus - 1));
+		},
+		[zone, focus],
+		!paused,
+		true,
+	);
+
+	useDirection(
+		'Right',
+		() => {
+			if (zone === 'filter') {
+				setChip((c) => Math.min(chips.length - 1, c + 1));
+				return;
+			}
+			setFocus(Math.min(Math.max(0, visible.length - 1), focus + 1));
+		},
+		[zone, focus, visible.length, chips.length],
+		!paused,
+		true,
+	);
+
 	useGamepadButton(
 		'A',
 		() => {
-			const g = games[focus];
-			if (g) setSelected(g.name || `Game #${g.id}`);
+			if (zone === 'grid') {
+				const game = visible[focus];
+				if (game) onOpen(game);
+			} else {
+				applyChip(chips[chip]);
+			}
 		},
-		[focus, games],
+		[zone, focus, visible, chips, chip, onOpen, applyChip],
+		!paused,
 	);
-	useGamepadButton('B', onBack, [onBack]);
+
+	useGamepadButton(
+		'B',
+		() => {
+			// B is "one level back": the filter bar returns to the grid, the
+			// grid returns to the settings screen.
+			if (zone === 'filter') setZone('grid');
+			else onBack();
+		},
+		[zone, onBack],
+		!paused,
+	);
+
+	useGamepadButton('Y', openSearch, [openSearch], !paused);
 
 	// Touch: drag to scroll.
-	const lastTouch = useRef<{ x: number; y: number } | null>(null);
+	const onDrag = useCallback(
+		(dy: number) => {
+			setScrollTop((s) => Math.max(0, Math.min(s + dy, maxScroll)));
+		},
+		[maxScroll],
+	);
+	useDragScroll(gridFocused, onDrag);
+
+	// ── rendering ─────────────────────────────────────────────────────────
 
 	// Only the rows that intersect the viewport are emitted. react-tela's
 	// <Group> viewport (offscreen canvas + drawImage) is avoided for the same
@@ -96,177 +340,105 @@ export function LibraryGrid({
 	const lastRow = Math.min(rows - 1, Math.floor((scrollTop + VIEW_H - 1) / TILE_H));
 
 	const tiles: React.ReactNode[] = [];
-	games.forEach((g, i) => {
+	visible.forEach((g, i) => {
 		const row = Math.floor(i / COLS);
 		if (row < firstRow || row > lastRow) return;
 
-		const x = GRID_X + (i % COLS) * (COVER_W + GAP_X);
+		const x = gridX + (i % COLS) * (COVER_W + GAP_X);
 		const y = VIEW_Y + row * TILE_H - scrollTop;
-		const isFocused = i === focus;
-		const key = g.id || `rom-${i}`;
 
 		tiles.push(
-			<Rect
-				key={`${key}-bg`}
+			<CoverTile
+				key={g.id || `rom-${i}`}
+				game={g}
 				x={x}
 				y={y}
 				width={COVER_W}
 				height={COVER_H}
-				fill="#1c1c2a"
-				borderRadius={8}
+				focused={i === focus}
 			/>,
 		);
-		if (g.coverUrl !== '') {
-			tiles.push(
-				<Image
-					key={`${key}-cover`}
-					src={g.coverUrl}
-					x={x}
-					y={y}
-					width={COVER_W}
-					height={COVER_H}
-				/>,
-			);
-		} else {
-			// No artwork: draw a placeholder so the tile is not an empty box.
-			// `textAlign="center"` centres the glyphs on the entity's x, so the
-			// origin is placed at the middle of the tile.
-			tiles.push(
-				<Text
-					key={`${key}-ph`}
-					x={x + COVER_W / 2}
-					y={y + 120}
-					fontSize={80}
-					fill="#3c3c58"
-					textAlign="center"
-				>
-					{(g.name || '?').trim().charAt(0).toUpperCase()}
-				</Text>,
-			);
-			if (g.platform !== '') {
-				tiles.push(
-					<Text
-						key={`${key}-ph-platform`}
-						x={x + COVER_W / 2}
-						y={y + 210}
-						maxWidth={COVER_W - 24}
-						fontSize={18}
-						fill="#454561"
-						textAlign="center"
-						overflow="ellipsis"
-					>
-						{g.platform}
-					</Text>,
-				);
-			}
-		}
-		tiles.push(
-			<Text
-				key={`${key}-title`}
-				x={x + 10}
-				y={y + COVER_H + 10}
-				maxWidth={COVER_W - 20}
-				fontSize={20}
-				lineHeight={1.15}
-				fill={isFocused ? '#ffffff' : '#9a9ab0'}
-				overflow="ellipsis"
-			>
-				{g.name || `Game #${g.id}`}
-			</Text>,
-		);
-		if (isFocused) {
-			tiles.push(
-				<Rect
-					key={`${key}-focus`}
-					x={x - 6}
-					y={y - 6}
-					width={COVER_W + 12}
-					height={COVER_H + 12}
-					stroke="#5b8cff"
-					lineWidth={4}
-					borderRadius={12}
-				/>,
-			);
-		}
 	});
+
+	// The focus ring is drawn after the masking bands, so a half-scrolled
+	// tile keeps its full outline.
+	const focusTile = visible[focus];
+	let focusRing: React.ReactNode = null;
+	if (focusTile !== undefined) {
+		const row = Math.floor(focus / COLS);
+		const x = gridX + (focus % COLS) * (COVER_W + GAP_X);
+		const y = VIEW_Y + row * TILE_H - scrollTop;
+		focusRing = (
+			<CoverFocusRing x={x} y={y} width={COVER_W} height={COVER_H} />
+		);
+	}
+
+	const hints =
+		zone === 'grid'
+			? ['A open', 'B back', 'Y search', '↑ filters']
+			: ['A apply', 'B back', '←→ chip', '↓ games', 'Y search'];
+
+	/*
+	 * The summary owns the right end of the filter bar, so the active
+	 * query is part of it: a separate marker would collide with the
+	 * chips, and the bar is dimmed while the grid has the focus.
+	 */
+	const summary =
+		needle === ''
+			? `${visible.length} of ${games.length} games`
+			: `"${query.trim()}" · ${visible.length} of ${games.length}`;
 
 	return (
 		<>
-			<Rect width={dims.width} height={dims.height} fill="#101018" />
+			<Rect width={dims.width} height={dims.height} fill={colors.bg} />
 
 			{tiles}
 
 			{/*
-			 * The old <Group> viewport clipped the tiles; without it the
-			 * partially visible top/bottom rows bleed into the header and the
-			 * footer. Two opaque bands mask the overflow, and the chrome is
-			 * drawn on top of them.
+			 * Two opaque bands mask the rows that overflow the viewport.
+			 * The chrome is drawn on top of them.
 			 */}
-			<Rect x={0} y={0} width={dims.width} height={VIEW_Y} fill="#101018" />
+			<Rect x={0} y={0} width={dims.width} height={VIEW_Y} fill={colors.bg} />
 			<Rect
 				x={0}
 				y={VIEW_Y + VIEW_H}
 				width={dims.width}
 				height={Math.max(0, dims.height - VIEW_Y - VIEW_H)}
-				fill="#101018"
+				fill={colors.bg}
 			/>
 
-			{/* Viewport frame — purely decorative, marks the scroll area. */}
-			<Rect
-				x={VIEW_X + 8}
-				y={VIEW_Y - 6}
-				width={VIEW_W - 16}
-				height={VIEW_H + 12}
-				stroke="#1e1e2c"
-				lineWidth={2}
-				borderRadius={10}
+			{focusRing}
+
+			<Header
+				title="RomMmate"
+				subtitle={status}
+				meta={`${games.length} games`}
+				badge={demo ? 'DEMO' : ''}
+				build={BUILD_ID}
 			/>
 
-			<Text x={24} y={28} fontSize={42} fill="#ffffff">
-				RomMmate
-			</Text>
-			{demo && (
-				<>
-					<Rect
-						x={dims.width - 100}
-						y={30}
-						width={76}
-						height={34}
-						fill="#5b8cff"
-						borderRadius={6}
-					/>
-					<Text x={dims.width - 62} y={40} fontSize={18} fill="#ffffff" textAlign="center">
-						DEMO
-					</Text>
-				</>
+			<FilterBar
+				items={chips}
+				focusedIndex={chip}
+				focused={zone === 'filter' && !paused}
+				summary={summary}
+			/>
+
+			{visible.length === 0 && (
+				<EmptyState
+					glyph="∅"
+					title={games.length === 0 ? 'Your library is empty' : 'No games match'}
+					detail={
+						games.length === 0
+							? 'Once RomM has roms in it, they will show up here.'
+							: 'Try another platform, or clear the search.'
+					}
+					centerY={VIEW_Y + VIEW_H / 2}
+				/>
 			)}
-			<Text
-				x={demo ? dims.width - 116 : dims.width - 24}
-				y={40}
-				fontSize={24}
-				fill="#9a9ab0"
-				textAlign="right"
-			>
-				{`${games.length} games`}
-			</Text>
-			<Text x={24} y={80} fontSize={20} fill="#6a6a85">
-				{status}
-			</Text>
-			<Text x={dims.width - 24} y={82} fontSize={16} fill="#4a4a60" textAlign="right">
-				{`build ${BUILD_ID}`}
-			</Text>
 
-			<Text
-				x={dims.width / 2}
-				y={dims.height - 52}
-				fontSize={22}
-				fill={selected !== '' ? '#c8c8e0' : '#6a6a85'}
-				textAlign="center"
-			>
-				{selected !== ''
-					? `Selected: ${selected}`
-					: 'A select · B back · stick or d-pad to move · drag to scroll'}
-			</Text>
+			<HintBarBackdrop />
+			<HintBar hints={hints} />
 		</>
 	);
 }
