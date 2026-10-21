@@ -109,6 +109,7 @@ rommmate/
 │     ├─ CoverImage.tsx     # <Image> with a safe failure mode (placeholder instead of a crash)
 │     ├─ FilterBar.tsx      # platform chips + search chip, horizontally scrollable
 │     ├─ GameDetail.tsx     # artwork, screenshot, metadata, summary
+│     ├─ Spinner.tsx        # tick-driven dots: "something is loading"
 │     ├─ EmptyState.tsx     # "nothing here" placeholder
 │     ├─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row
 │     └─ FatalError.tsx     # last-resort error screen
@@ -118,6 +119,7 @@ rommmate/
 │     ├─ entry.tsx          # renders the real app into a <canvas>, fakes gamepad + keyboard
 │     ├─ build.mjs          # esbuild bundle for the harness
 │     ├─ raf-shim.ts        # headless Chrome only paints one frame — keep rAF alive
+│     ├─ shot.mjs           # CDP screenshot at a real-time offset (mid-download states)
 │     └─ bands.mjs / probe.mjs / ascii.mjs   # layout inspection from the terminal
 └─ (output) rommate.nro / rommate.nsp
 ```
@@ -185,18 +187,24 @@ The app is a canvas app, so "does this look right?" is a question a
 screenshot answers better than a mental model. `tools/preview/` renders the
 **real** `src/` components into a `<canvas>` in a normal browser:
 
-- `?view=demo|filter|empty|detail` — a starting state per screen.
+- `?view=demo|filter|empty|detail|spinner` — a starting state per screen.
 - `?sim=Up,A,B` — simulated button presses (the harness installs a fake
   Web Gamepad and a fake on-screen keyboard; `?vktext=mario` pre-fills the
   search field).
+- `?cover=<url>` overrides every tile's artwork URL, so the fetch/cache
+  path can be exercised against an endpoint of our choosing.
 - The trace of what the app did is mirrored into the document title, and
   `bands.mjs` / `probe.mjs` / `ascii.mjs` read the screenshot back, so the
-  layout can be checked from the terminal.
+  layout can be checked from the terminal. `shot.mjs` takes a screenshot at
+  a chosen *real-time* offset over the DevTools protocol — the only way to
+  capture a state that depends on a fetch still in flight.
 
 Two headless-Chrome quirks are worth knowing: it only paints **one**
 animation frame per load (so the harness shims `requestAnimationFrame` with a
 timer), and Chrome has its **own** `navigator.virtualKeyboard` (so the
-harness replaces it rather than checking for its presence).
+harness replaces it rather than checking for its presence). A third: virtual
+time **pauses while a network fetch is in flight**, so `--virtual-time-budget`
+screenshots only ever land *after* every request has settled.
 
 ## Next iteration
 
@@ -204,16 +212,23 @@ Done in v0.5:
 
 - Library screen with a filter bar (platform chips) and a search field that
   opens the runtime's on-screen keyboard.
-- Game detail screen (cover, screenshot, metadata, summary) on A-press.
+- Game detail screen (cover, screenshot, metadata, summary) on A-press,
+  with a loading indicator while its cover is still on its way.
 - Cover art is fetched with the API token, cached on the SD card, and drawn
   from the local copy.
-- Shared `Header` / `HintBar` / `EmptyState` / theme tokens.
+- Shared `Header` / `HintBar` / `EmptyState` / `Spinner` / theme tokens.
+
+Done in v0.6:
+
+- Lazy artwork prefetch: the grid warms the cover cache for the rows around
+  the viewport (and the focused tile's screenshot), so artwork is usually
+  ready by the time its row scrolls into view.
+- `shot.mjs`: real-time-offset screenshots via the DevTools protocol, for
+  states that depend on an in-flight fetch.
 
 Still open:
 
 - `WebSocket` live updates (library changes) — the runtime has it.
-- Lazy loading of the artwork for the rows that are scrolled into view
-  (the covers are fetched eagerly for everything the grid shows today).
 - The RomM list is fetched with a fixed page size — paging through a
   library of thousands of roms.
 - `--fat` build for distribution without the shared runtime.

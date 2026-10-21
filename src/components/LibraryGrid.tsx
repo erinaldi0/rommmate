@@ -11,6 +11,7 @@ import { SwkbdType } from '@nx.js/constants';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
 import { useDragScroll } from '../hooks/use-drag-scroll';
 import { getVirtualKeyboard } from '../vk';
+import { prefetchCovers } from '../covers';
 import { BUILD_ID } from '../version';
 import { colors } from '../theme';
 import { CoverFocusRing, CoverTile, TITLE_BLOCK_H } from './CoverTile';
@@ -142,6 +143,32 @@ export function LibraryGrid({
 	const rows = Math.max(1, Math.ceil(visible.length / COLS));
 	const contentH = rows * TILE_H;
 	const maxScroll = Math.max(0, contentH - VIEW_H);
+
+	/*
+	 * Lazy artwork: the rows around the viewport prefetch their covers, so
+	 * the artwork is usually ready by the time the row scrolls into view.
+	 * The buffer is one row above and two below, because scrolling is
+	 * mostly downward; anything else is picked up by the tile's own
+	 * CoverImage when it mounts. The artwork the detail screen would show
+	 * for the focused tile is warmed too, so pressing A does not add a
+	 * third network round trip.
+	 */
+	useEffect(() => {
+		const first = Math.max(0, Math.floor(scrollTop / TILE_H) - 1);
+		const last = Math.min(rows - 1, Math.floor((scrollTop + VIEW_H - 1) / TILE_H) + 2);
+		const urls: string[] = [];
+		for (let r = first; r <= last; r++) {
+			for (let c = 0; c < COLS; c++) {
+				const url = visible[r * COLS + c]?.coverUrl;
+				if (url !== undefined && url !== '') urls.push(url);
+			}
+		}
+		const focused = visible[focus];
+		if (focused?.screenshotUrl !== undefined && focused.screenshotUrl !== '') {
+			urls.push(focused.screenshotUrl);
+		}
+		prefetchCovers(urls);
+	}, [scrollTop, rows, visible, focus]);
 
 	// Keep the focused tile inside the visible window.
 	useEffect(() => {

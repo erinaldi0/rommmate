@@ -75,6 +75,21 @@ export function resolveCover(url: string): Promise<string> {
 	return job;
 }
 
+/**
+ * Warms the cache for a batch of artwork URLs.
+ *
+ * The grid calls this for the rows around the viewport, so a cover arrives
+ * roughly when its row scrolls into view. Every URL is deduplicated
+ * internally and every failure is silent, exactly like `resolveCover` —
+ * a prefetch is a hint, not a requirement.
+ */
+export function prefetchCovers(urls: string[]): void {
+	for (const url of urls) {
+		if (url === '') continue;
+		void resolveCover(url);
+	}
+}
+
 /** FNV-1a — short, stable, and good enough to key a cache file. */
 function hashUrl(url: string): string {
 	let h = 0x811c9dc5;
