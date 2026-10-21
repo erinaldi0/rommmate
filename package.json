@@ -1,0 +1,31 @@
+{
+  "name": "rommate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RomM companion app for Nintendo Switch — built on nx.js + react-tela",
+  "license": "MIT",
+  "author": "Emanuel Rinaldi",
+  "nacp": {
+    "id": "01ef076150b20000",
+    "title": "RomMmate"
+  },
+  "scripts": {
+    "build": "esbuild --bundle --sourcemap --sources-content=false --target=es2022 --format=esm --define:process.env.NODE_ENV=\\\"production\\\" src/main.tsx --outfile=romfs/main.js",
+    "nro": "npm run build && nxjs-nro",
+    "nsp": "npm run build && nxjs-nsp",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@nx.js/constants": "0.4.1",
+    "react": "^18.3.1",
+    "react-tela": "1.0.1"
+  },
+  "devDependencies": {
+    "@nx.js/nro": "1.0.0-beta.7",
+    "@nx.js/nsp": "1.0.0-beta.7",
+    "@nx.js/runtime": "1.0.0-beta.7",
+    "@types/react": "^18.3.23",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.8.3"
+  }
+}

@@ -15,5 +15,11 @@ romfs/*.map
 # Logs
 *.log
 
+# Switch keysets (never commit these!)
+prod.keys
+keys.dat
+keys.txt
+keys.ini
+
 # OS cruft
 .DS_Store
