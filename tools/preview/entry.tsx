@@ -81,7 +81,12 @@ if (base !== null) {
 // Chrome has a `navigator.virtualKeyboard` of its own (the VirtualKeyboard
 // API), so the stub is installed unconditionally — with `defineProperty`,
 // because the prototype accessor is read-only.
+//
+// `?fkbd=1` simulates a system keyboard that never appears (its rect stays
+// zero) and `?fkbd=2` one that does not exist at all, so the in-app
+// fallback (`InAppKeyboard`) can be exercised in preview.
 {
+	const fkbd = params.get('fkbd');
 	const listeners: Record<string, Array<() => void>> = {};
 	const vk = {
 		boundingRect: { height: 0 },
@@ -89,7 +94,7 @@ if (base !== null) {
 		type: 0,
 		okButtonText: '',
 		show() {
-			this.boundingRect.height = 320;
+			if (fkbd !== '1') this.boundingRect.height = 320;
 			(listeners['geometrychange'] ?? []).forEach((l) => l());
 			// The typed text can be pre-filled, so a search can be simulated.
 			const text = params.get('vktext');
@@ -114,7 +119,7 @@ if (base !== null) {
 		},
 	};
 	Object.defineProperty(navigator, 'virtualKeyboard', {
-		value: vk,
+		value: fkbd === '2' ? undefined : vk,
 		configurable: true,
 		writable: true,
 	});

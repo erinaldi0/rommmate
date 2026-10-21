@@ -3,7 +3,8 @@ import { Rect, Text, useDimensions } from 'react-tela';
 import { SwkbdType } from '@nx.js/constants';
 import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
 import { useCanvasTap } from '../hooks/use-canvas-tap';
-import { getVirtualKeyboard } from '../vk';
+import { getVirtualKeyboard, virtualKeyboardError } from '../vk';
+import { InAppKeyboard } from './InAppKeyboard';
 import { BUILD_ID } from '../version';
 import type { Config } from '../config';
 
@@ -42,6 +43,34 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	const [draft, setDraft] = useState('');
 	const pending = useRef<Field | null>(null);
 	const vk = getVirtualKeyboard();
+	/** The field the built-in keyboard is editing, or null when it is closed. */
+	const [kbd, setKbd] = useState<{ field: Field; note: string } | null>(null);
+	/** Mirror of `kbd` for listeners that cannot see the state (geometrychange). */
+	const kbdRef = useRef<{ field: Field; note: string } | null>(null);
+	/** Monotonic counter for the delayed appear-failure check. */
+	const kbdGen = useRef(0);
+
+	/** True once the system keyboard has a non-zero rect (i.e. it is up). */
+	const sysKbdUp = useRef(false);
+
+	function startFallback(field: Field, note: string) {
+		kbdGen.current += 1;
+		pending.current = null;
+		kbdRef.current = { field, note };
+		setKbd({ field, note });
+		setDraft(field === 'baseUrl' ? cfg.baseUrl : cfg.token);
+	}
+
+	function closeFallback(commit: boolean) {
+		kbdGen.current += 1;
+		const field = kbdRef.current?.field;
+		kbdRef.current = null;
+		setKbd(null);
+		setDraft('');
+		if (commit && field) {
+			setCfg((c) => (field === 'baseUrl' ? { ...c, baseUrl: draft } : { ...c, token: draft }));
+		}
+	}
 
 	/**
 	 * Open the on-screen keyboard for a field.
@@ -51,17 +80,49 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	 * is running on the values being edited anyway, so cancel it and let
 	 * the edit happen — otherwise a launch with saved credentials would
 	 * leave the rows untouchable for the whole load.
+	 *
+	 * The system keyboard fails in two silent ways, and both are covered:
+	 * when the object could not be created at all, and when its *appear*
+	 * call fails (the object exists, the rect stays zero). Either way the
+	 * built-in `InAppKeyboard` takes over, so the field stays editable.
 	 */
 	function openField(field: Field, force = false) {
-		if (!vk) return;
 		if (busy && !force) return;
 		if (busy) onCancel?.();
+
+		// A field re-open closes whatever keyboard was open before.
+		kbdGen.current += 1;
+		kbdRef.current = null;
+		setKbd(null);
+
+		if (vk === null) {
+			const err = virtualKeyboardError();
+			startFallback(field, `System keyboard unavailable — using built-in${err ? ` (${err.slice(0, 30)})` : ''}`);
+			return;
+		}
+
 		pending.current = field;
 		vk.type = SwkbdType.Normal;
 		vk.okButtonText = 'Done';
 		vk.value = field === 'baseUrl' ? cfg.baseUrl : cfg.token;
 		setDraft(vk.value);
 		vk.show();
+
+		// A failed appear leaves the rect at zero (the runtime ignores the
+		// failure). Give the keyboard a moment to come up; if it never
+		// does, fall back to the built-in one so the field is editable.
+		kbdGen.current += 1;
+		const gen = kbdGen.current;
+		sysKbdUp.current = (vk.boundingRect.height ?? 0) > 0;
+		if (!sysKbdUp.current) {
+			setTimeout(() => {
+				if (gen !== kbdGen.current) return;
+				sysKbdUp.current = (vk.boundingRect.height ?? 0) > 0;
+				if (!sysKbdUp.current) {
+					startFallback(field, 'System keyboard did not appear — using built-in keyboard');
+				}
+			}, 1200);
+		}
 	}
 
 	// Commit the keyboard contents when it closes (OK, Back, or any other
@@ -77,7 +138,22 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			setCfg((c) => (field === 'baseUrl' ? { ...c, baseUrl: value } : { ...c, token: value }));
 		};
 		const onGeom = () => {
-			if (vk.boundingRect.height === 0) commit();
+			if (vk.boundingRect.height === 0) {
+				commit();
+			} else if (kbdRef.current !== null) {
+				// The system keyboard came up (perhaps late, after a
+				// failed first appear) while the built-in one was open:
+				// it owns the bottom of the screen, so hide it and close
+				// the built-in one.
+				sysKbdUp.current = true;
+				kbdGen.current += 1;
+				vk.hide();
+				kbdRef.current = null;
+				setKbd(null);
+				setDraft('');
+			} else {
+				sysKbdUp.current = true;
+			}
 		};
 		const onInput = () => setDraft(vk.value);
 		vk.addEventListener('submit', commit);
@@ -94,8 +170,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		};
 	}, [vk]);
 
-	useDirection('Up', () => setFocus((f) => Math.max(0, f - 1)), []);
-	useDirection('Down', () => setFocus((f) => Math.min(ROWS.length - 1, f + 1)), []);
+	useDirection('Up', () => setFocus((f) => Math.max(0, f - 1)), [], kbd === null);
+	useDirection('Down', () => setFocus((f) => Math.min(ROWS.length - 1, f + 1)), [], kbd === null);
 
 	useGamepadButton(
 		'A',
@@ -107,6 +183,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			} else onDemo();
 		},
 		[focus, cfg, busy, onDemo],
+		kbd === null,
 	);
 	useGamepadButton(
 		'ZR',
@@ -115,25 +192,28 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			else if (focus === 1) openField('token', true);
 		},
 		[focus],
+		kbd === null,
 	);
 
-	// B cancels a connection in flight; the walk is a long one, and the
-	// user may have fat-fingered a URL.
+	// B closes the built-in keyboard first (discarding the edit); only with
+	// no keyboard open does it cancel a connection in flight.
 	useGamepadButton(
 		'B',
 		() => {
-			if (busy && onCancel) onCancel();
+			if (kbd) closeFallback(false);
+			else if (busy && onCancel) onCancel();
 		},
-		[busy, onCancel],
+		[busy, onCancel, kbd],
 	);
 
 	// A finger is the primary pointer on the Switch: tapping a row does
 	// exactly what A on that row does (openField / onSave / onDemo each
-	// guard `busy` themselves, so no extra gate is needed here).
+	// guard `busy` themselves, so no extra gate is needed here). While the
+	// built-in keyboard is open it owns the taps (and the screen bottom).
 	const cx = dims.width / 2;
 	const rowX = cx - ROW_W / 2;
 
-	useCanvasTap(true, ({ x, y }) => {
+	useCanvasTap(kbd === null, ({ x, y }) => {
 		for (let i = 0; i < ROWS.length; i++) {
 			const ry = ROW_TOP + i * (ROW_H + ROW_GAP);
 			if (x < rowX || x > rowX + ROW_W || y < ry || y > ry + ROW_H) continue;
@@ -147,9 +227,10 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		}
 	});
 
+	const editing = (f: Field) => pending.current === f || kbd?.field === f;
 	const rowValue = (i: number): string => {
-		if (i === 0) return pending.current === 'baseUrl' && draft !== '' ? draft : cfg.baseUrl || '(not set)';
-		if (i === 1) return pending.current === 'token' && draft !== '' ? draft : mask(cfg.token);
+		if (i === 0) return editing('baseUrl') && draft !== '' ? draft : cfg.baseUrl || '(not set)';
+		if (i === 1) return editing('token') && draft !== '' ? draft : mask(cfg.token);
 		if (i === 2) return busy ? 'connecting… · B to cancel' : 'A to save & open library';
 		return 'A to skip the login and browse mock games';
 	};
@@ -225,6 +306,16 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			<Text x={cx} y={dims.height - 52} fontSize={22} fill="#6a6a85" textAlign="center">
 				tap a field (or A / ZR) to edit · A on “Save & Connect” to sign in · A on “Demo mode” to skip
 			</Text>
+
+			{kbd !== null && (
+				<InAppKeyboard
+					value={draft}
+					note={kbd.note}
+					onChange={setDraft}
+					onSubmit={() => closeFallback(true)}
+					onClose={() => closeFallback(false)}
+				/>
+			)}
 		</>
 	);
 }

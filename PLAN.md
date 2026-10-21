@@ -136,6 +136,7 @@ rommmate/
 │     ├─ CoverImage.tsx     # <Image> with a safe failure mode (placeholder instead of a crash)
 │     ├─ FilterBar.tsx      # platform chips + search chip, horizontally scrollable
 │     ├─ GameDetail.tsx     # artwork, screenshot, metadata, summary
+│     ├─ InAppKeyboard.tsx  # built-in QWERTY, used when the system keyboard is unavailable
 │     ├─ Spinner.tsx        # tick-driven dots: "something is loading"
 │     ├─ EmptyState.tsx     # "nothing here" placeholder
 │     ├─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row (B cancels)
@@ -309,6 +310,18 @@ Done in v0.8.1:
   types, ref-stable callback — same pattern as `use-drag-scroll`) and
   `click.mjs` (CDP mouse click + title-trace readout, for driving the touch
   path from the terminal).
+
+Done in v0.8.2:
+
+- **Built-in keyboard fallback**: the runtime's system keyboard fails in two
+  silent ways on some setups — the object creation throws, or the appear
+  call fails and the bounding rect stays zero. Both are now detected
+  (creation error surfaced, rect re-checked 1.2s after `show()`), and the
+  in-app `InAppKeyboard` (compact QWERTY + digits + symbols, gamepad and
+  touch driven) takes over the bottom of the screen so the Base URL / API
+  Token fields stay editable no matter what. If the system keyboard does
+  appear, it is used as before and the fallback never shows.
+- `?fkbd=1|2` preview harness knobs simulate both failure modes.
 
 Still open:
 

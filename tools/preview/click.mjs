@@ -3,19 +3,30 @@
  * Dev-only: click on the preview canvas via CDP and read back what the app
  * did (the harness mirrors vk show/hide into document.title).
  *
- * usage: node tools/preview/click.mjs <x> <y> [url] [waitMs=3000] [port=9333] [shot.png]
+ * Leading `x,y` tokens are click points (in sequence, 500ms apart); the
+ * remaining arguments are as below.
+ *
+ * usage: node tools/preview/click.mjs <x,y> [x,y …] [url] [waitMs=3000] [port=9333] [shot.png] [postMs=0]
  */
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-const [x, y, url, waitArg, portArg, shot] = process.argv.slice(2);
-if (!x || !y) {
-	console.error('usage: node tools/preview/click.mjs <x> <y> [url] [waitMs] [port] [shot.png]');
+const rest = process.argv.slice(2);
+const points = [];
+let argIndex = 0;
+while (argIndex < rest.length && /^\d+,\d+$/.test(rest[argIndex])) {
+	points.push(rest[argIndex].split(',').map(Number));
+	argIndex += 1;
+}
+if (points.length === 0) {
+	console.error('usage: node tools/preview/click.mjs <x,y> [x,y …] [url] [waitMs] [port] [shot.png] [postMs]');
 	process.exit(2);
 }
+const [url, waitArg, portArg, shot, postArg] = rest.slice(argIndex);
 const pageUrl = url || 'http://localhost:8731/';
 const waitMs = Number(waitArg ?? 3000);
+const postMs = Number(postArg ?? 0);
 const port = Number(portArg ?? 9333);
 
 const chrome = spawn(
@@ -80,17 +91,16 @@ try {
 
 	await sleep(waitMs);
 
-	const click = async (cx, cy) => {
+	for (const [cx, cy] of points) {
 		await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
 		await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
-	};
-
-	await click(Number(x), Number(y));
-	await sleep(800);
+		await sleep(500);
+	}
 
 	const title = (await send('Runtime.evaluate', { expression: 'document.title' })).result.value;
 	console.log('title after click:', JSON.stringify(title));
 	if (shot) {
+		if (postMs > 0) await sleep(postMs);
 		const png = await send('Page.captureScreenshot', { format: 'png' });
 		writeFileSync(shot, Buffer.from(png.data, 'base64'));
 		console.log(`screenshot: ${shot}`);
