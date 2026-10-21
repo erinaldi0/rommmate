@@ -90,13 +90,14 @@ rommmate/
 │  ├─ App.tsx               # screen state machine: Settings ↔ Library
 │  ├─ romm.ts               # RommClient: typed fetch + JSON parsing (/api/library, /api/roms)
 │  ├─ config.ts             # baseUrl + token via localStorage (Save Data)
+│  ├─ mock.ts               # mocked library used by the "Demo mode" entry
 │  ├─ covers.ts             # cover URL → fetch → cache to sdmc:/… → <Image src>
 │  ├─ gamepad.ts            # Web Gamepad polling → focus/selection state; touch-scroll
 │  └─ components/
 │     ├─ Header.tsx         # title + library name + status line
-│     ├─ CoverGrid.tsx      # tile grid inside a <Group> viewport (contentHeight + scrollTop)
+│     ├─ CoverGrid.tsx      # tile grid, row-culled viewport (no <Group>)
 │     ├─ CoverTile.tsx      # <Image> cover + <Text> title, focus ring
-│     └─ SettingsScreen.tsx # baseUrl / token entry
+│     └─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row
 └─ (output) rommate.nro / rommate.nsp
 ```
 
@@ -104,10 +105,11 @@ rommmate/
 
 - `render(<App/>, screen)` from `react-tela/render` — React tree drawn onto the
   runtime's screen canvas; no DOM assumed.
-- **Grid**: compute a rows×cols tile layout in JS; render inside
-  `<Group width={…} height={…} contentHeight={…} scrollTop={…}>` — react-tela's
-  viewport scrolling only moves the `drawImage` source rect, so scrolling is
-  essentially free (same mechanism the NSP forwarder uses).
+- **Grid**: compute a rows×cols tile layout in JS; emit only the rows that
+  intersect the viewport (row culling) and mask the overflow with two opaque
+  bands. `<Group>` is deliberately unused — it renders into an offscreen canvas
+  and composites back with `drawImage()`, and a failure there aborts the frame
+  (it is what made the settings rows invisible in v0.2).
 - **Navigation**: poll the Web Gamepad in a `requestAnimationFrame` loop →
   grid focus (d-pad/stick), A = select, B = back, plus `onTouchMove` drag
   scrolling. Model the interaction code on `switch-nsp-forwarder`'s
@@ -132,7 +134,9 @@ rommmate/
      to `sdmc:/nx.js/` (needs Wi-Fi once) — or pre-place the release NRO there.
 4. **Configure**: in-app Settings screen writes `baseUrl` + `token`
    (`rmm_…`) to `localStorage` (Save Data) — no more hand-editing an SD
-   `config.json`.
+   `config.json`. The last row is **Demo mode**: it skips the login entirely
+   and opens the library with a mocked catalogue (`src/mock.ts`), so the app
+   can be driven without a reachable RomM server.
 5. Dev loop: `npm run nro` → drop in `sdmc:/switch/` → homebrew menu (applet
    mode: works, CPU raster — fine for UI iteration; use the NSP for perf).
 

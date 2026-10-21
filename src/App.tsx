@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { hasConfig, loadConfig, saveConfig, type Config } from './config';
 import { onFatalError } from './errors';
 import { RommClient, type RommGame } from './romm';
+import { MOCK_GAMES } from './mock';
 import { FatalError } from './components/FatalError';
 import { SettingsScreen } from './components/SettingsScreen';
 import { LibraryGrid } from './components/LibraryGrid';
@@ -15,6 +16,8 @@ export function App() {
 	const [status, setStatus] = useState('');
 	const [busy, setBusy] = useState(false);
 	const [fatal, setFatal] = useState<string | null>(null);
+	/** True while the library shows mocked data instead of a real RomM server. */
+	const [demo, setDemo] = useState(false);
 
 	// Anything that blows up while rendering is surfaced on screen instead of
 	// leaving a half-drawn frame behind.
@@ -58,7 +61,17 @@ export function App() {
 	function saveAndConnect(next: Config) {
 		saveConfig(next);
 		setCfg(next);
+		setDemo(false);
 		void connect(next);
+	}
+
+	// Skip the login entirely: fill the library with mocked games so the app
+	// can be used (and the next screens developed) without a RomM server.
+	function startDemo() {
+		setDemo(true);
+		setGames(MOCK_GAMES);
+		setStatus(`Demo mode — ${MOCK_GAMES.length} mock games`);
+		setRoute('library');
 	}
 
 	function backToSettings() {
@@ -69,8 +82,14 @@ export function App() {
 	if (fatal !== null) return <FatalError message={fatal} />;
 
 	return route === 'settings' ? (
-		<SettingsScreen initial={cfg} status={status} busy={busy} onSave={saveAndConnect} />
+		<SettingsScreen
+			initial={cfg}
+			status={status}
+			busy={busy}
+			onSave={saveAndConnect}
+			onDemo={startDemo}
+		/>
 	) : (
-		<LibraryGrid games={games} status={status} onBack={backToSettings} />
+		<LibraryGrid games={games} status={status} demo={demo} onBack={backToSettings} />
 	);
 }

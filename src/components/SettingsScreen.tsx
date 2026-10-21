@@ -14,15 +14,17 @@ interface Props {
 	/** True while a connection attempt is in flight. */
 	busy: boolean;
 	onSave: (cfg: Config) => void;
+	/** Skip the login and open the library with mocked data. */
+	onDemo: () => void;
 }
 
 type Field = 'baseUrl' | 'token';
 
-const ROWS = ['Base URL', 'API Token', 'Save & Connect'] as const;
+const ROWS = ['Base URL', 'API Token', 'Save & Connect', 'Demo mode (mock data)'] as const;
 const ROW_W = 920;
-const ROW_H = 70;
-const ROW_GAP = 18;
-const ROW_TOP = 230;
+const ROW_H = 68;
+const ROW_GAP = 14;
+const ROW_TOP = 200;
 
 function mask(v: string): string {
 	if (!v) return '(not set)';
@@ -30,7 +32,7 @@ function mask(v: string): string {
 	return v.slice(0, 10) + '•'.repeat(Math.min(16, v.length - 10));
 }
 
-export function SettingsScreen({ initial, status, busy, onSave }: Props) {
+export function SettingsScreen({ initial, status, busy, onSave, onDemo }: Props) {
 	const dims = useDimensions();
 	const [cfg, setCfg] = useState<Config>(initial);
 	const [focus, setFocus] = useState(0);
@@ -86,9 +88,11 @@ export function SettingsScreen({ initial, status, busy, onSave }: Props) {
 		() => {
 			if (focus === 0) openField('baseUrl');
 			else if (focus === 1) openField('token');
-			else if (!busy) onSave(cfg);
+			else if (focus === 2) {
+				if (!busy) onSave(cfg);
+			} else onDemo();
 		},
-		[focus, cfg, busy],
+		[focus, cfg, busy, onDemo],
 	);
 	useGamepadButton(
 		'ZR',
@@ -105,7 +109,8 @@ export function SettingsScreen({ initial, status, busy, onSave }: Props) {
 	const rowValue = (i: number): string => {
 		if (i === 0) return pending.current === 'baseUrl' && draft !== '' ? draft : cfg.baseUrl || '(not set)';
 		if (i === 1) return pending.current === 'token' && draft !== '' ? draft : mask(cfg.token);
-		return busy ? 'connecting…' : 'A to save & open library';
+		if (i === 2) return busy ? 'connecting…' : 'A to save & open library';
+		return 'A to skip the login and browse mock games';
 	};
 
 	const statusError = /fail|cannot|invalid/i.test(status);
@@ -177,7 +182,7 @@ export function SettingsScreen({ initial, status, busy, onSave }: Props) {
 			)}
 
 			<Text x={cx} y={dims.height - 52} fontSize={22} fill="#6a6a85" textAlign="center">
-				A / ZR to edit a field · A on the last row to connect
+				A / ZR to edit a field · A on “Save & Connect” to sign in · A on “Demo mode” to skip
 			</Text>
 		</>
 	);

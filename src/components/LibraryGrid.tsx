@@ -22,6 +22,8 @@ interface Props {
 	games: RommGame[];
 	/** Status line from the client (load result, etc.). */
 	status: string;
+	/** True when the games are mocked rather than fetched from RomM. */
+	demo?: boolean;
 	onBack: () => void;
 	/** Initial scroll offset (preview harness only; defaults to the top). */
 	initialScroll?: number;
@@ -32,6 +34,7 @@ interface Props {
 export function LibraryGrid({
 	games,
 	status,
+	demo = false,
 	onBack,
 	initialScroll = 0,
 	initialFocus = 0,
@@ -124,6 +127,38 @@ export function LibraryGrid({
 					height={COVER_H}
 				/>,
 			);
+		} else {
+			// No artwork: draw a placeholder so the tile is not an empty box.
+			// `textAlign="center"` centres the glyphs on the entity's x, so the
+			// origin is placed at the middle of the tile.
+			tiles.push(
+				<Text
+					key={`${key}-ph`}
+					x={x + COVER_W / 2}
+					y={y + 120}
+					fontSize={80}
+					fill="#3c3c58"
+					textAlign="center"
+				>
+					{(g.name || '?').trim().charAt(0).toUpperCase()}
+				</Text>,
+			);
+			if (g.platform !== '') {
+				tiles.push(
+					<Text
+						key={`${key}-ph-platform`}
+						x={x + COVER_W / 2}
+						y={y + 210}
+						maxWidth={COVER_W - 24}
+						fontSize={18}
+						fill="#454561"
+						textAlign="center"
+						overflow="ellipsis"
+					>
+						{g.platform}
+					</Text>,
+				);
+			}
 		}
 		tiles.push(
 			<Text
@@ -190,7 +225,28 @@ export function LibraryGrid({
 			<Text x={24} y={28} fontSize={42} fill="#ffffff">
 				RomMmate
 			</Text>
-			<Text x={dims.width - 24} y={40} fontSize={24} fill="#9a9ab0" textAlign="right">
+			{demo && (
+				<>
+					<Rect
+						x={dims.width - 100}
+						y={30}
+						width={76}
+						height={34}
+						fill="#5b8cff"
+						borderRadius={6}
+					/>
+					<Text x={dims.width - 62} y={40} fontSize={18} fill="#ffffff" textAlign="center">
+						DEMO
+					</Text>
+				</>
+			)}
+			<Text
+				x={demo ? dims.width - 116 : dims.width - 24}
+				y={40}
+				fontSize={24}
+				fill="#9a9ab0"
+				textAlign="right"
+			>
 				{`${games.length} games`}
 			</Text>
 			<Text x={24} y={80} fontSize={20} fill="#6a6a85">

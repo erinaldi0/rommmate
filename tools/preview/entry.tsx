@@ -12,6 +12,7 @@ import { render } from 'react-tela/render';
 import { App } from '../../src/App';
 import { LibraryGrid } from '../../src/components/LibraryGrid';
 import { installErrorTrap } from '../../src/errors';
+import { MOCK_GAMES } from '../../src/mock';
 import type { RommGame } from '../../src/romm';
 
 installErrorTrap();
@@ -60,7 +61,21 @@ if (ctx) {
 
 // `?view=grid` renders the library grid with mock data (the live screen needs
 // a reachable RomM server, which the harness does not have).
-if (params.get('view') === 'grid') {
+const view = params.get('view');
+
+if (view === 'demo') {
+	render(
+		<LibraryGrid
+			games={MOCK_GAMES}
+			status={`Demo mode — ${MOCK_GAMES.length} mock games`}
+			demo
+			onBack={() => {}}
+			initialScroll={Number(params.get('scroll') ?? 0)}
+			initialFocus={Number(params.get('focus') ?? 0)}
+		/>,
+		canvas,
+	);
+} else if (view === 'grid') {
 	const names = [
 		'Super Mario 64',
 		'The Legend of Zelda: Ocarina of Time',
