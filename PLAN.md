@@ -64,15 +64,29 @@ with a **react-tela** (React → canvas) UI.
   handy for debugging), `localStorage` (Storage → Save Data), `Performance`,
   timers, `TextEncoder/Decoder` (utf-8).
 
-## RomM endpoints used (unchanged from v1)
+## RomM endpoints used
 
-- `GET /api/library` — token validation (lightweight auth probe)
-- `GET /api/roms?_limit=48` — the game list (name, platform, cover art)
+- `GET /api/roms?limit=…&offset=…` — the game list, walked page by page
+  (100 per page) until the library is exhausted. The route exists in every
+  RomM generation and doubles as the auth probe (`limit=1`).
 
-Full spec at `{baseUrl}/openapi.json`. The parser stays defensive about the
-`assets` field shape (RomM versions drift here). **Re-validate against your
-instance's `openapi.json`** — the v1 C++ parser in the initial commit is the
-starting point.
+RomM versions drift in the details, and the client parses defensively:
+
+- **5.x** answers `limit`/`offset` with `{ items, total, … }`; genres and
+  release date live in a `metadatum` blob; covers are local
+  `/assets/romm/resources/…` paths (the `?ts=` cache buster contains a space
+  — normalised to `%20`); screenshots ride in `merged_screenshots`.
+- **≤4.x** ignores those parameters and answers with a bare array (or a
+  `data`/`results` wrapper) of its own default page size; the client then
+  falls back to FastAPI's `_limit`/`_page`. Fields come from the older
+  `assets` object and top-level `platform`/`genres`/`release_date`.
+
+The dialect is sniffed from the shape of the first page (a legacy-shaped
+sniff is discarded and the walk restarts in the legacy dialect). The walk
+stops on a short page, the reported total, a page that adds nothing new
+(a server that will not advance → `truncated`), or a 50-page safety cap.
+**Re-validate against your instance's `openapi.json`** — the v1 C++ parser
+in the initial commit is the historical reference.
 
 ## Directory structure
 
@@ -88,7 +102,8 @@ rommmate/
 ├─ src/
 │  ├─ main.tsx              # entry: render(<App/>, screen); global error overlay
 │  ├─ App.tsx               # route state machine: Settings ↔ Library ↔ Detail
-│  ├─ romm.ts               # RommClient: typed fetch + JSON parsing (/api/library, /api/roms)
+│  ├─ romm.ts               # RommClient: /api/roms client — version-dialect
+│  │                        # sniffing, pagination walk, defensive field parsing
 │  ├─ config.ts             # baseUrl + token via localStorage (Save Data)
 │  ├─ mock.ts               # mocked library used by the "Demo mode" entry
 │  ├─ covers.ts             # cover URL → fetch → cache to sdmc:/… → <Image src>
@@ -120,6 +135,7 @@ rommmate/
 │     ├─ build.mjs          # esbuild bundle for the harness
 │     ├─ raf-shim.ts        # headless Chrome only paints one frame — keep rAF alive
 │     ├─ shot.mjs           # CDP screenshot at a real-time offset (mid-download states)
+│     ├─ proxy.mjs          # CORS proxy in front of a real RomM instance (the preview can't hit it directly)
 │     └─ bands.mjs / probe.mjs / ascii.mjs   # layout inspection from the terminal
 └─ (output) rommate.nro / rommate.nsp
 ```
@@ -193,6 +209,14 @@ screenshot answers better than a mental model. `tools/preview/` renders the
   search field).
 - `?cover=<url>` overrides every tile's artwork URL, so the fetch/cache
   path can be exercised against an endpoint of our choosing.
+- `?base=<url>` (plus `?token=<…>`) seeds the saved credentials with a
+  running RomM and auto-connects, so the *live* app can be driven in the
+  browser. Point it at `proxy.mjs` rather than at the instance itself: a
+  real RomM answers without `access-control-allow-origin`, so Chrome blocks
+  the direct fetch (the Switch app is unaffected — nx.js's fetch has no
+  CORS). `node tools/preview/proxy.mjs` reads the `url` from `.env` and
+  forwards everything, adding the CORS headers; the request log makes the
+  pagination walk visible.
 - The trace of what the app did is mirrored into the document title, and
   `bands.mjs` / `probe.mjs` / `ascii.mjs` read the screenshot back, so the
   layout can be checked from the terminal. `shot.mjs` takes a screenshot at
@@ -226,9 +250,20 @@ Done in v0.6:
 - `shot.mjs`: real-time-offset screenshots via the DevTools protocol, for
   states that depend on an in-flight fetch.
 
+Done in v0.7:
+
+- RomM 5.x support: the API moved — `/api/library` (the old auth probe) is
+  gone, the list comes back as `{ items, … }`, and genres / release date /
+  cover / size moved to new field names. The client sniffs the dialect from
+  the first page and parses both generations.
+- Whole-library pagination: the client walks `/api/roms` 100 roms per page
+  (a `_limit`/`_page` fallback for ≤4.x, duplicate-page detection, a safety
+  cap) and reports progress per page — verified against a real 5.4.0
+  instance with 1266 roms.
+- `proxy.mjs` + `?base=`/`?token`: the preview can now browse a real library
+  through a local CORS proxy.
+
 Still open:
 
 - `WebSocket` live updates (library changes) — the runtime has it.
-- The RomM list is fetched with a fixed page size — paging through a
-  library of thousands of roms.
 - `--fat` build for distribution without the shared runtime.

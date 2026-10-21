@@ -16,9 +16,17 @@
  *   detail      the detail screen of a single game
  *   spinner     the loading indicator on its own
  *
+ * Credentials (query parameters):
+ *   seed=1      pre-fills the settings form with a fake instance + token
+ *   base=…      overrides the instance URL (with an optional `token=…`,
+ *               which defaults to the fake one) and auto-connects, so the
+ *               live app can be pointed at a running RomM — typically the
+ *               `proxy.mjs` CORS proxy in front of the real instance
+ *
  * Input simulation (query parameter `sim`): a comma separated list of
  * button names that are pressed one after another, e.g. `sim=Up,A,B`.
  * `sim=Y` opens the virtual keyboard, which is pre-filled with `vktext`.
+ * `?delay=<ms>` defers the first press (default 400).
  */
 import './raf-shim';
 import React, { useState } from 'react';
@@ -54,6 +62,18 @@ if (params.get('seed') === '1') {
 } else {
 	localStorage.removeItem('rommate.baseUrl');
 	localStorage.removeItem('rommate.token');
+}
+
+// A `base` (and `token`) parameter overrides the seed, so the live app can
+// be pointed at a running RomM instance — typically `proxy.mjs` in front of
+// the real one (the instance itself does not answer browser CORS requests).
+const base = params.get('base');
+if (base !== null) {
+	localStorage.setItem('rommate.baseUrl', base);
+	localStorage.setItem(
+		'rommate.token',
+		params.get('token') ?? 'rmm_0123456789abcdef0123456789abcdef',
+	);
 }
 
 // Fake virtual keyboard (nx.js provides the real one on-device).
@@ -177,7 +197,9 @@ function installFakeGamepad(sequence: string[]): void {
 		step += 1;
 		setTimeout(tick, 160);
 	};
-	setTimeout(tick, 400);
+	// `?delay=` defers the first press, so a sequence can be aimed at a
+	// state that appears later (e.g. the library once the load has settled).
+	setTimeout(tick, Number(params.get('delay') ?? 400));
 }
 
 const sim = (params.get('sim') ?? '')

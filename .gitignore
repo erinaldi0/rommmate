@@ -30,3 +30,4 @@ keys.ini
 
 # OpenCode harness
 .opencode/
+.env

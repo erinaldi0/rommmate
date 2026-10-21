@@ -7,13 +7,17 @@
  * `Authorization: Bearer <token>` on every request.
  *
  * Endpoints used:
- *   GET /api/library          — lightweight auth probe (any 200 = valid token)
- *   GET /api/roms?_limit=48   — the game list (name, platform, cover art,
- *                               screenshot, description, genres, release
- *                               date and rom size)
+ *   GET /api/roms   — the game list (name, platform, cover art, screenshot,
+ *                     description, genres, release date and rom size),
+ *                     walked page by page until the library is exhausted
  *
- * RomM versions drift in the details (bare array vs {data: [...]} wrapper,
- * asset values as plain paths vs objects), so parsing stays defensive.
+ * RomM versions drift in the details, so parsing stays defensive:
+ *   - 5.x answers `limit`/`offset` with `{ items, total, limit, offset, ... }`
+ *     and keeps genres / release date in a `metadatum` blob.
+ *   - ≤4.x ignores those parameters and answers with a bare array (or a
+ *     `data` / `results` wrapper) of its own default page size; the client
+ *     then falls back to FastAPI's `_limit`/`_page` to keep paging.
+ * The dialect is sniffed from the shape of the first page.
  */
 
 export interface RommGame {
@@ -36,8 +40,31 @@ export interface RommGame {
 }
 
 /**
- * Read one entry of a RomM `assets` object. Asset values come in two shapes
- * across RomM versions:
+ * How many roms to request per page. 100 sits comfortably inside the page
+ * size bounds of every RomM generation (5.x allows up to 10000, the older
+ * FastAPI-backed builds cap at 100–1000).
+ */
+const PAGE_SIZE = 100;
+
+/**
+ * Older builds are asked for the smaller 50 — that is the FastAPI default,
+ * so a page that comes back full of it is guaranteed to be a full page.
+ * (Requesting more risks the server capping the page, which would make a
+ * genuinely full page look short and end the walk early.)
+ */
+const LEGACY_PAGE_SIZE = 50;
+
+/**
+ * Safety cap on the number of pages, so a server that refuses to advance
+ * (or that grows while the library is being walked) cannot loop forever.
+ * 50 pages cover 5000 roms on the modern dialect — far beyond any real
+ * Switch library.
+ */
+const MAX_PAGES = 50;
+
+/**
+ * Read one entry of a RomM `assets` object (≤4.x). Asset values come in two
+ * shapes across versions:
  *   "box_2d": "/assets/games/123/abc.png"                  (plain path)
  *   "box_2d": { "path": "/assets/games/123/abc.png", ... } (object)
  */
@@ -80,11 +107,100 @@ function firstNumber(source: Record<string, unknown>, keys: string[]): number {
 	return 0;
 }
 
+/** A non-negative finite number, or null when absent. */
+function nonNegNumber(v: unknown): number | null {
+	return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+}
+
+/**
+ * RomM 5.x nests some fields (genres, release date) in a `metadatum` blob;
+ * ≤4.x keeps them at the top level. Returns the object that actually holds
+ * them: the `metadatum` blob when present, the entry itself otherwise.
+ */
+function metaOf(e: Record<string, unknown>): Record<string, unknown> {
+	const m = e['metadatum'];
+	return typeof m === 'object' && m !== null ? (m as Record<string, unknown>) : e;
+}
+
+/**
+ * Platform name. 5.x exposes it as flat `platform_custom_name` /
+ * `platform_display_name` strings; ≤4.x as a `platform` object or string.
+ * A user-renamed (custom) platform name wins over the display name.
+ */
+function parsePlatform(e: Record<string, unknown>): string {
+	const custom = firstString(e, ['platform_custom_name']);
+	if (custom !== '') return custom;
+	const display = firstString(e, ['platform_display_name']);
+	if (display !== '') return display;
+
+	const p = e['platform'];
+	if (typeof p === 'string') return p.trim();
+	if (typeof p === 'object' && p !== null) {
+		const name = (p as { name?: unknown }).name;
+		if (typeof name === 'string') return name.trim();
+	}
+	return '';
+}
+
+/**
+ * Cover art path or URL. 5.x exposes local `/assets/…` paths
+ * (`path_cover_large` / `path_cover_small`) and an external provider
+ * `url_cover`; ≤4.x nests them under `assets`. Local paths are preferred:
+ * they are served by the instance itself and can carry the token.
+ */
+function parseCover(e: Record<string, unknown>): string {
+	let p = firstString(e, ['path_cover_large', 'path_cover_small']);
+	if (p === '') p = firstString(e, ['url_cover']);
+	if (p === '') p = assetPath(e['assets'], 'box_2d');
+	if (p === '') p = assetPath(e['assets'], 'screenshot_16x9');
+	return p;
+}
+
+/**
+ * Screenshot path or URL. 5.x has a single `screenshot_path` plus a
+ * `merged_screenshots` array; ≤4.x nests it under `assets`.
+ */
+function parseScreenshot(e: Record<string, unknown>): string {
+	let p = firstString(e, ['screenshot_path']);
+	if (p === '') {
+		const merged = e['merged_screenshots'];
+		if (Array.isArray(merged)) {
+			for (const s of merged) {
+				if (typeof s === 'string' && s.trim() !== '') {
+					p = s;
+					break;
+				}
+				if (typeof s === 'object' && s !== null) {
+					const q = (s as { path?: unknown }).path;
+					if (typeof q === 'string' && q.trim() !== '') {
+						p = q;
+						break;
+					}
+				}
+			}
+		}
+	}
+	if (p === '') p = assetPath(e['assets'], 'screenshot_16x9');
+	return p;
+}
+
+/** Rom file size. 5.x reports `fs_size_bytes`; ≤4.x `rom_size_bytes`. */
+function parseSize(e: Record<string, unknown>): number {
+	return firstNumber(e, ['fs_size_bytes', 'rom_size_bytes', 'rom_size']);
+}
+
+/** Short description. `summary` in both major versions; `description` on older builds. */
+function parseSummary(e: Record<string, unknown>): string {
+	return firstString(e, ['summary', 'description', 'bios']);
+}
+
 /**
  * Genres arrive as `[{ id, name }]` on current RomM, but some versions (and
- * some imports) use plain strings. Both are accepted.
+ * some imports) use plain strings. Both are accepted. 5.x nests them in
+ * `metadatum`; ≤4.x keeps them at the top level.
  */
-function parseGenres(value: unknown): string[] {
+function parseGenres(e: Record<string, unknown>): string[] {
+	const value = metaOf(e)['genres'];
 	if (!Array.isArray(value)) return [];
 
 	const out: string[] = [];
@@ -104,11 +220,14 @@ function parseGenres(value: unknown): string[] {
 
 /**
  * RomM reports the release date as a unix timestamp (`first_release`) in
- * some versions and as an ISO string (`release_date`) in others. Both are
- * normalised to `YYYY-MM-DD`; anything implausible is dropped.
+ * some versions, a millisecond timestamp (`first_release_date`) in 5.x, and
+ * an ISO string (`release_date`) in others. All are normalised to
+ * `YYYY-MM-DD`; anything implausible is dropped.
  */
-function parseReleaseDate(source: Record<string, unknown>): string {
-	const iso = firstString(source, ['release_date', 'first_release_date']);
+function parseReleaseDate(e: Record<string, unknown>): string {
+	const src = metaOf(e);
+
+	const iso = firstString(src, ['first_release_date', 'release_date', 'first_release']);
 	if (iso !== '') {
 		const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
 		if (m) return m[0];
@@ -117,10 +236,10 @@ function parseReleaseDate(source: Record<string, unknown>): string {
 		if (year) return year[1];
 	}
 
-	const stamp = firstNumber(source, ['first_release']);
+	const stamp = firstNumber(src, ['first_release', 'first_release_date', 'release_date']);
 	if (stamp <= 0) return '';
 
-	// RomM uses seconds; a millisecond value is ~1000x larger.
+	// Seconds in older versions, milliseconds in 5.x — the ms value is ~1000x larger.
 	const ms = stamp > 1e11 ? stamp : stamp * 1000;
 	const date = new Date(ms);
 	if (Number.isNaN(date.getTime())) return '';
@@ -129,8 +248,50 @@ function parseReleaseDate(source: Record<string, unknown>): string {
 	if (year < 1970 || year > 2100) return '';
 
 	const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-	const day = String(date.getUTCDate()).padStart(2, '0');
+	const day = String(date.getUTCDate() + 0).padStart(2, '0');
 	return `${year}-${month}-${day}`;
+}
+
+/**
+ * Unwrap one page of `/api/roms` into a rom entry array.
+ *
+ *   5.x   : { "items": [...], "total": n, "limit": n, "offset": n, ... }
+ *   ≤4.x  : [ ... ]  |  { "data": [...] }  |  { "results": [...] }
+ *
+ * `modern` tells the caller which request dialect produced the page (a
+ * `results` wrapper from an old build is still the legacy dialect, even
+ * though it is a wrapper).
+ *
+ * @returns the entries and the total the server reported (null when it did
+ *          not), or null for a shape this client does not recognise.
+ */
+function parsePage(j: unknown): {
+	items: unknown[];
+	total: number | null;
+	modern: boolean;
+} | null {
+	if (Array.isArray(j)) {
+		return { items: j, total: null, modern: false };
+	}
+	if (typeof j === 'object' && j !== null) {
+		const o = j as Record<string, unknown>;
+		if (Array.isArray(o['items'])) {
+			return { items: o['items'], total: nonNegNumber(o['total']), modern: true };
+		}
+		for (const key of ['data', 'results']) {
+			if (Array.isArray(o[key])) {
+				return { items: o[key] as unknown[], total: nonNegNumber(o['total']), modern: false };
+			}
+		}
+	}
+	return null;
+}
+
+/** Query string for one page of the modern (5.x) dialect. */
+function modernQuery(limit: number, offset: number): string {
+	// The web UI extras (the full rom id index, per-letter counts, filter
+	// values) are not needed and would ride along on every page.
+	return `limit=${limit}&offset=${offset}&with_rom_id_index=false&with_char_index=false&with_filter_values=false`;
 }
 
 export class RommClient {
@@ -155,25 +316,37 @@ export class RommClient {
 		};
 	}
 
-	/** Resolve a (possibly relative) RomM asset path to an absolute URL. */
+	/**
+	 * Resolve a (possibly relative) RomM asset path to an absolute URL.
+	 *
+	 * RomM stamps local asset paths with a `?ts=<date>` cache buster that
+	 * contains a literal space (`?ts=2026-09-25 16:19:19`). `fetch` is
+	 * supposed to percent-encode that itself, but it is normalised here so
+	 * every transport (nx.js, browser preview) sees a clean URL.
+	 */
 	#absUrl(maybeRelative: string): string {
 		if (!maybeRelative) return '';
-		if (maybeRelative.startsWith('http://') || maybeRelative.startsWith('https://')) {
-			return maybeRelative;
-		}
-		return this.#baseUrl + (maybeRelative.startsWith('/') ? '' : '/') + maybeRelative;
+		const url =
+			maybeRelative.startsWith('http://') || maybeRelative.startsWith('https://')
+				? maybeRelative
+				: this.#baseUrl + (maybeRelative.startsWith('/') ? '' : '/') + maybeRelative;
+		return url.replace(/ /g, '%20');
 	}
 
 	/**
 	 * Validate the token with a lightweight authenticated GET. RomM
-	 * authorises every /api route against the token, so 200 proves the
-	 * token works without needing a heavier endpoint.
+	 * authorises every /api route against the token, so a 200 proves the
+	 * token works without pulling a large payload.
+	 *
+	 * The probe uses `/api/roms` rather than the older `/api/library`: the
+	 * roms route exists in every RomM generation, while `/api/library` was
+	 * removed in 5.x and would 404 there.
 	 *
 	 * @returns null on success, or a human-readable error message.
 	 */
 	async authenticate(): Promise<string | null> {
 		try {
-			const res = await fetch(this.#baseUrl + '/api/library', {
+			const res = await fetch(this.#baseUrl + '/api/roms?limit=1', {
 				headers: this.#headers(),
 			});
 			if (res.status === 200) return null;
@@ -185,98 +358,219 @@ export class RommClient {
 	}
 
 	/**
-	 * Fetch the user's game/ROM list (first 48 — the UI only needs the
-	 * first screens; pagination comes later).
+	 * GET one page of `/api/roms` and parse the JSON body.
 	 *
-	 * @returns the parsed games, and/or a human-readable error.
+	 * @returns the parsed JSON, or a human-readable error message.
 	 */
-	async getGames(): Promise<{ games: RommGame[]; error: string | null }> {
+	async #fetchPage(query: string): Promise<{ json: unknown } | { error: string }> {
 		try {
-			const res = await fetch(this.#baseUrl + '/api/roms?_limit=48', {
+			const res = await fetch(this.#baseUrl + '/api/roms?' + query, {
 				headers: this.#headers(),
 			});
 			if (!res.ok) {
-				return { games: [], error: `HTTP ${res.status} from /api/roms` };
+				return { error: `HTTP ${res.status} from /api/roms` };
 			}
-
-			let j: unknown;
 			try {
-				j = await res.json();
+				return { json: await res.json() };
 			} catch {
-				return { games: [], error: 'malformed JSON from /api/roms' };
+				return { error: 'malformed JSON from /api/roms' };
 			}
-
-			// RomM serves the list either as a bare JSON array or wrapped as
-			// { "data": [ ... ], "meta": { ... } } depending on the version.
-			let arr: unknown[] | null = null;
-			if (Array.isArray(j)) {
-				arr = j;
-			} else if (
-				typeof j === 'object' &&
-				j !== null &&
-				Array.isArray((j as { data?: unknown }).data)
-			) {
-				arr = (j as { data: unknown[] }).data;
-			}
-
-			if (arr === null) {
-				return { games: [], error: 'unexpected response shape from /api/roms' };
-			}
-
-			const games: RommGame[] = [];
-
-			for (const entry of arr) {
-				// Tolerate garbage entries instead of aborting the whole list.
-				if (typeof entry !== 'object' || entry === null) continue;
-				const e = entry as Record<string, unknown>;
-
-				const game: RommGame = {
-					id: 0,
-					name: '',
-					platform: '',
-					coverUrl: '',
-					screenshotUrl: '',
-					summary: '',
-					releaseDate: '',
-					genres: [],
-					sizeBytes: 0,
-				};
-
-				if (typeof e.id === 'number') game.id = e.id;
-				if (typeof e.name === 'string') game.name = e.name;
-
-				// platform is usually { "id": ..., "name": "Nintendo 64" },
-				// but be defensive in case a version flattens or omits it.
-				const p = e.platform;
-				if (typeof p === 'string') {
-					game.platform = p;
-				} else if (typeof p === 'object' && p !== null) {
-					const name = (p as { name?: unknown }).name;
-					if (typeof name === 'string') game.platform = name;
-				}
-				game.platform = game.platform.trim();
-
-				// Cover art: prefer the 2D box, fall back to a 16:9 screenshot.
-				const assets = e.assets;
-				let path = assetPath(assets, 'box_2d');
-				if (!path) path = assetPath(assets, 'screenshot_16x9');
-				game.coverUrl = this.#absUrl(path);
-
-				// The screenshot is what the detail screen shows; a rom
-				// without one falls back to the "no screenshots" placeholder.
-				game.screenshotUrl = this.#absUrl(assetPath(assets, 'screenshot_16x9'));
-
-				game.summary = firstString(e, ['summary', 'description', 'bios']);
-				game.releaseDate = parseReleaseDate(e);
-				game.genres = parseGenres(e.genres);
-				game.sizeBytes = firstNumber(e, ['rom_size_bytes', 'rom_size']);
-
-				games.push(game);
-			}
-
-			return { games, error: null };
 		} catch (err) {
-			return { games: [], error: `cannot reach RomM (${String(err)})` };
+			return { error: `cannot reach RomM (${String(err)})` };
 		}
+	}
+
+	/**
+	 * Parse one rom entry (any RomM generation) into a `RommGame`.
+	 *
+	 * @returns the game, or null for an entry that is not even an object.
+	 */
+	#parseRom(entry: unknown): RommGame | null {
+		if (typeof entry !== 'object' || entry === null) return null;
+		const e = entry as Record<string, unknown>;
+
+		return {
+			id: typeof e['id'] === 'number' ? e['id'] : 0,
+			name: typeof e['name'] === 'string' ? e['name'].trim() : '',
+			platform: parsePlatform(e),
+			coverUrl: this.#absUrl(parseCover(e)),
+			screenshotUrl: this.#absUrl(parseScreenshot(e)),
+			summary: parseSummary(e),
+			releaseDate: parseReleaseDate(e),
+			genres: parseGenres(e),
+			sizeBytes: parseSize(e),
+		};
+	}
+
+	/**
+	 * Fetch the user's whole game/ROM list, walking `/api/roms` page by
+	 * page until the library is exhausted.
+	 *
+	 * The page size and the response wrapper differ between RomM
+	 * generations, so the first page is requested in the modern (5.x)
+	 * style and its shape picks the dialect for the rest of the walk:
+	 *   - the modern server honours `limit`/`offset`, so the sniff page
+	 *     is used as-is and pages advance by offset;
+	 *   - a ≤4.x server ignored those parameters (its default page size
+	 *     came back), so that page is discarded and the walk restarts
+	 *     from page 1 in the legacy `_limit`/`_page` dialect.
+	 *
+	 * The walk stops on a short page, on reaching the reported total, on a
+	 * page that adds no new roms (a server that will not advance), or on
+	 * the `MAX_PAGES` safety cap.
+	 *
+	 * @param onProgress called after each page with the number of roms
+	 *                   collected so far and the total the server
+	 *                   reported (null when it did not).
+	 * @returns the parsed games, and/or a human-readable error, and
+	 *          whether the walk stopped before the library was fully read.
+	 */
+	async getGames(
+		onProgress?: (loaded: number, total: number | null) => void,
+	): Promise<{ games: RommGame[]; error: string | null; truncated: boolean }> {
+		const games: RommGame[] = [];
+		const seen = new Set<string>();
+
+		/** Append the page's new entries; returns how many were added. */
+		const addPage = (items: unknown[]): number => {
+			let added = 0;
+			for (const entry of items) {
+				const game = this.#parseRom(entry);
+				if (game === null) continue;
+				// An id-less (unidentified) rom falls back to its content,
+				// so identical garbage entries collapse into one tile.
+				const key =
+					game.id > 0
+						? `id:${game.id}`
+						: `s:${game.name}|${game.platform}|${game.summary.slice(0, 32)}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				games.push(game);
+				added += 1;
+			}
+			return added;
+		};
+
+		let total: number | null = null;
+		let exhausted = false;
+		let truncated = false;
+		let rounds = 0;
+
+		// 1. Sniff the dialect with a modern-style first page.
+		const first = await this.#fetchPage(modernQuery(PAGE_SIZE, 0));
+		if ('error' in first) {
+			return { games: [], error: first.error, truncated: false };
+		}
+		const firstPage = parsePage(first.json);
+		if (firstPage === null) {
+			return {
+				games: [],
+				error: 'unexpected response shape from /api/roms',
+				truncated: false,
+			};
+		}
+		const modern = firstPage.modern;
+
+		let modernOffset = 0;
+		let legacyPage = 1;
+
+		if (firstPage.modern) {
+			// The modern server honoured the request: page 1 is usable.
+			rounds = 1;
+			addPage(firstPage.items);
+			modernOffset += firstPage.items.length;
+			if (firstPage.total !== null) total = firstPage.total;
+
+			// A page that parsed to nothing is a structural problem (a
+			// schema this client does not know), not an empty library —
+			// say so instead of walking 50 garbage pages.
+			if (firstPage.items.length > 0 && games.length === 0) {
+				return {
+					games: [],
+					error: 'could not parse any games from /api/roms',
+					truncated: false,
+				};
+			}
+
+			// The echoed `limit` is the page size the server actually used
+			// (it may cap a larger request); a full page has that many.
+			const eff = nonNegNumber((first.json as Record<string, unknown>)['limit']) ?? PAGE_SIZE;
+			const full = firstPage.items.length >= eff;
+			if (!full) {
+				exhausted = true;
+			} else if (total !== null && games.length >= total) {
+				exhausted = true;
+			}
+		} else {
+			// Legacy: the sniff page came back at the server's own default
+			// size, so it is discarded and the walk restarts from page 1.
+			if (firstPage.total !== null) total = firstPage.total;
+		}
+
+		onProgress?.(games.length, total);
+
+		// 2. Walk the remaining pages until the library is exhausted.
+		while (!exhausted && rounds < MAX_PAGES) {
+			const query = modern
+				? modernQuery(PAGE_SIZE, modernOffset)
+				: `_limit=${LEGACY_PAGE_SIZE}&_page=${legacyPage}`;
+
+			const page = await this.#fetchPage(query);
+			if ('error' in page) {
+				// A mid-walk failure is a hard failure: partial libraries
+				// silently lose their filter chips and totals.
+				return { games: [], error: page.error, truncated: false };
+			}
+			const shape = parsePage(page.json);
+			if (shape === null) {
+				return {
+					games: [],
+					error: 'unexpected response shape from /api/roms',
+					truncated: false,
+				};
+			}
+			if (shape.total !== null) total = shape.total;
+
+			rounds += 1;
+			if (modern) {
+				modernOffset += shape.items.length;
+			} else {
+				legacyPage += 1;
+			}
+
+			// A full page has as many entries as the server actually
+			// served (its echoed `limit` on 5.x, our request on ≤4.x).
+			const eff = modern
+				? (nonNegNumber((page.json as Record<string, unknown>)['limit']) ?? PAGE_SIZE)
+				: LEGACY_PAGE_SIZE;
+			const full = shape.items.length >= eff;
+
+			if (!full) {
+				exhausted = true;
+			}
+
+			const added = addPage(shape.items);
+
+			// A full page that contains nothing new means the server is not
+			// advancing (it ignores the page parameters): stop, and mark the
+			// walk as truncated because the library may continue beyond it.
+			if (!exhausted && full && shape.items.length > 0 && added === 0) {
+				exhausted = true;
+				truncated = true;
+			}
+
+			if (!exhausted && total !== null && games.length >= total) {
+				exhausted = true;
+			}
+
+			onProgress?.(games.length, total);
+		}
+
+		// Leaving the loop with the last page still full means the safety
+		// cap was hit while the library continued — everything fetched is
+		// kept, but the count is not the whole library.
+		if (!exhausted) truncated = true;
+
+		return { games, error: null, truncated };
 	}
 }

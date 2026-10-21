@@ -48,7 +48,10 @@ export function App() {
 		}
 
 		setStatus('Loading library…');
-		const { games: gs, error } = await client.getGames();
+		const { games: gs, error, truncated } = await client.getGames(
+			(loaded, total) =>
+				setStatus(`Loading library… ${loaded}${total !== null ? ` / ${total}` : ''}`),
+		);
 		setBusy(false);
 
 		if (error !== null) {
@@ -59,7 +62,11 @@ export function App() {
 		// On failure we deliberately stay on the settings screen so the user
 		// can fix the credentials; the screen is only left on success.
 		setGames(gs);
-		setStatus(gs.length > 0 ? `Loaded ${gs.length} games` : 'Library is empty');
+		setStatus(
+			gs.length > 0
+				? `Loaded ${gs.length} games${truncated ? ' (capped)' : ''}`
+				: 'Library is empty',
+		);
 		setRoute('library');
 	}, []);
 
