@@ -1,117 +1,163 @@
-# RomM for Switch — Project Plan
+# RomM for Switch — Project Plan (v2)
 
-A Nintendo Switch companion app (`.nro`) for [RomM](https://romm.app), a self-hosted ROM manager.
-Built with **libnx**, **Borealis** (the `wiliwili`/v2 rewrite — XML layouts + `BRLS_BIND` + the
-spatial focus engine), **libcurl** (devkitPro portlib; TLS via libnx), and **nlohmann/json**.
+A Nintendo Switch companion app for [RomM](https://romm.app), a self-hosted ROM
+manager — built on **nx.js**, the JavaScript/TypeScript runtime for Switch homebrew,
+with a **react-tela** (React → canvas) UI.
+
+> **v2 pivot (2026-10):** v1 of this plan used C++ + libnx + Borealis + libcurl.
+> We are rewriting on **nx.js** (V8 + libuv + Skia, Web-platform APIs). The v1
+> implementation was removed from the working tree — it is preserved in the
+> initial commit (`6cc4721`) and remains useful as a reference for the RomM JSON
+> shapes and the cover-grid layout.
+
+## Why nx.js
+
+- **Web APIs instead of C**: `fetch()` (mbedtls TLS), `WebSocket`, `Image`/
+  `createImageBitmap`, `OffscreenCanvas`, Web Audio, `localStorage` (persisted to
+  the Switch Save Data filesystem), `requestAnimationFrame`, Web Gamepad +
+  touch events — all provided by the runtime.
+- **No toolchain on the dev machine**: app development is pure Node.js/npm
+  (esbuild → single `romfs/main.js`). No devkitPro, no Borealis submodule, no
+  portlibs. (devkitPro is only needed to build the *runtime* itself, which we
+  don't — we consume the published one.)
+- **A proven reference app**: the runtime author's own
+  [`switch-nsp-forwarder`](https://github.com/TooTallNate/switch-nsp-forwarder)
+  is a shipped, polished canvas UI app (tile grid, joystick navigation,
+  touch-scrolling) built with exactly this stack. We model ours on it.
 
 ## Stack
 
-| Concern      | Choice |
-|--------------|--------|
-| SDK          | libnx (devkitA64 toolchain) |
-| UI           | Borealis — `natinusala/borealis` `main` branch (XML + `BRLS_BIND`) |
-| HTTP / TLS   | libcurl (devkitPro portlib; TLS via libnx) |
-| JSON         | nlohmann/json (single header, vendored in `include/`) |
-| RomM auth    | Client API Token → `Authorization: Bearer rmm_...` |
+| Concern       | Choice |
+|---------------|--------|
+| Runtime       | **nx.js** v1 — V8 + libuv + Skia; pinned release (`1.0.0-beta.6` at time of writing); docs: [nxjs.n8.io](https://nxjs.n8.io/runtime) |
+| Language      | **TypeScript**, bundled by **esbuild** → single `romfs/main.js` |
+| UI            | **React + [react-tela](https://github.com/TooTallNate/react-tela)** — `<Rect>`/`<Text>`/`<Image>`/`<Group>` canvas scene graph; `render(<App/>, screen)`; **version-pinned** (marked "in development — expect breaking changes") |
+| Layout        | Manual `<Group>` positioning for the tile grid; `@react-tela/flex` (Yoga/WASM) available later if needed |
+| Networking    | global `fetch()` + `WebSocket` (RomM API, bearer token) |
+| Persistence   | `localStorage` (Save Data) for config; `Switch.*` native fs APIs for the cover-art cache on `sdmc:` |
+| Graphics      | Skia-accelerated canvas (`screen.getContext('2d')`) in **application mode** |
+| Packaging     | **NSP installed title** (slim: tiny forwarder + shared runtime), via `@nx.js/nsp`; NRO builds for dev iteration |
 
-## RomM endpoints used
+## nx.js facts we rely on (verify per release — it is 1.0.0-beta)
+
+- `screen` — 1280×720 display; `getContext('2d')` (Skia, GPU in application mode,
+  CPU raster fallback in applet mode). One context kind per canvas.
+- **Memory regimes**: *application mode* (installed NSP, or hbmenu via title
+  override) → ~3 GiB, full V8 JIT, GPU canvas. *Applet mode* (launched from the
+  Album) → ~380 MiB, jitless by default, CPU raster, no WebGL2. **We ship an NSP
+  → application mode.** Tunable via `nxjs.ini` in romfs (`[v8] jit`,
+  `[memory] heap_limit`, `[renderer] mode`, `[threadpool]`, …); fallbacks are
+  logged to `sdmc:/switch/nxjs-debug.log`.
+- **Packaging**: slim (default) apps are a few-hundred-KB launcher that
+  chainloads a shared runtime from `sdmc:/nx.js/nxjs-v<version>.nro`, chosen by
+  the semver `[runtime] version` baked into `nxjs.ini`. On first launch the
+  bootstrap **auto-downloads** a compatible runtime from the nx.js GitHub
+  releases (needs Wi-Fi once); manual placement works too. Fat builds embed the
+  whole runtime (~40 MB NRO / ~21 MB NSP) — available via `--fat` if ever needed.
+- **Input**: Web Gamepad (`Gamepad`, `GamepadButton`, `GamepadEvent`, haptics;
+  `Gamepad.id` = device name + serial on fw 5.0+) + `TouchEvent`/`Touch` for the
+  touchscreen.
+- **Files**: `Switch` namespace — `readFileSync`/`writeFile`/`mkdir`/`readDir`
+  etc. for `sdmc:` paths; `romfs:`/`sdmc:`/`nxjs:` URL protocols for
+  `Image`, `fetch`, streams.
+- **Misc**: `fonts` (canvas font set), `console` (themed on-screen terminal —
+  handy for debugging), `localStorage` (Storage → Save Data), `Performance`,
+  timers, `TextEncoder/Decoder` (utf-8).
+
+## RomM endpoints used (unchanged from v1)
 
 - `GET /api/library` — token validation (lightweight auth probe)
 - `GET /api/roms?_limit=48` — the game list (name, platform, cover art)
 
-Full spec lives at `{baseUrl}/openapi.json`, Swagger at `/api/docs`, ReDoc at `/api/redoc`.
-The parser is defensive about the `assets` field shape; confirm it against your instance's
-`openapi.json` (RomM versions drift a little here).
+Full spec at `{baseUrl}/openapi.json`. The parser stays defensive about the
+`assets` field shape (RomM versions drift here). **Re-validate against your
+instance's `openapi.json`** — the v1 C++ parser in the initial commit is the
+starting point.
 
 ## Directory structure
 
 ```
 rommmate/
-├─ Makefile
-├─ README.md
-├─ PLAN.md
-├─ .gitignore
-├─ .gitmodules                 # borealis submodule
-├─ setup.sh                    # one-shot: toolchain + portlibs + submodule installer
-├─ lib/
-│  └─ borealis/                # git submodule → natinusala/borealis @ main
-├─ include/
-│  ├─ RommClient.hpp
-│  ├─ MainView.hpp
-│  └─ nlohmann/json.hpp        # vendored single-header
-├─ src/
-│  ├─ main.cpp
-│  ├─ RommClient.cpp
-│  └─ MainView.cpp
+├─ package.json             # deps: react, react-tela, @nx.js/runtime (types)
+│                           # devDeps: esbuild, @nx.js/nro, @nx.js/nsp, typescript
+├─ tsconfig.json
 ├─ romfs/
-│  ├─ xml/main.xml
-│  ├─ posters/default_poster.png
-│  └─ (fonts/, themes/, img/ … auto-merged from lib/borealis/resources at build)
-└─ build/                      # output: build/rommate.nro
+│  ├─ main.js               # esbuild bundle (generated — gitignored)
+│  ├─ nxjs.ini              # [v8]/[renderer]/[runtime] tuning; [runtime] version baked by packager
+│  └─ assets/               # default poster, icon
+├─ src/
+│  ├─ main.tsx              # entry: render(<App/>, screen); global error overlay; gamepad boot
+│  ├─ App.tsx               # screen state machine: Settings ↔ Library
+│  ├─ romm.ts               # RommClient: typed fetch + JSON parsing (/api/library, /api/roms)
+│  ├─ config.ts             # baseUrl + token via localStorage (Save Data)
+│  ├─ covers.ts             # cover URL → fetch → cache to sdmc:/… → <Image src>
+│  ├─ gamepad.ts            # Web Gamepad polling → focus/selection state; touch-scroll
+│  └─ components/
+│     ├─ Header.tsx         # title + library name + status line
+│     ├─ CoverGrid.tsx      # tile grid inside a <Group> viewport (contentHeight + scrollTop)
+│     ├─ CoverTile.tsx      # <Image> cover + <Text> title, focus ring
+│     └─ SettingsScreen.tsx # baseUrl / token entry
+└─ (output) rommate.nro / rommate.nsp
 ```
 
-## File responsibilities
+## UI architecture (react-tela)
 
-| File | Role |
-|------|------|
-| `Makefile` | devkitA64 build (mirrors Borealis' demo Makefile); links `-lcurl -lz -lnx` + deko3d via `borealis.mk`; merges Borealis resources + compiles its shaders into romfs |
-| `setup.sh` | one-shot installer: devkitPro pacman client, `switch-dev` group, portlibs, Borealis submodule |
-| `src/main.cpp` | libnx init, `curl_global_init`, Borealis lifecycle, config load, push `MainView` |
-| `include/RommClient.hpp` | API contract: `RommGame` + `RommClient` |
-| `src/RommClient.cpp` | libcurl GET (bearer) + nlohmann/json parsing of `/api/library` & `/api/roms` |
-| `include/MainView.hpp` | UI contract: `MainView : brls::Box` with `BRLS_BIND`s |
-| `src/MainView.cpp` | inflate `xml/main.xml`, fetch library, build focusable cover+title rows |
-| `romfs/xml/main.xml` | `<brls:Box>` layout: header + status label + scrolling grid |
-| `romfs/posters/default_poster.png` | placeholder cover art |
-
-## Key Borealis API notes (verified against `natinusala/borealis` `main`)
-
-- Lifecycle: `Application::init()` (no-arg) → `createWindow(title)` →
-  `pushActivity(view)` → `while (Application::mainLoop()) {}`. `setGlobalQuit(true)` maps START→quit.
-  `init()` sets up the deko3d/GL/input backend internally — no manual graphics init needed.
-- `Box::inflateFromXMLRes(res)` — the XML root node **must** be `<brls:Box>`.
-- `BRLS_BIND(Type, member, "id")` — lazy pointer to a child resolved by id; **access after `inflate`**.
-- `Image::setImageFromRes(name)` / `setImageFromFile(path)` / `setScalingType(...)`.
-- `Label::setText(...)` / `setFontSize(...)` / `setSingleLine(...)`.
-- Focus: `View::setFocusable(true)` + `registerClickAction(fn)` (A) or
-  `registerAction(hint, ControllerButton::X, fn, ...)`. The engine auto-moves the highlight.
-- `Header::setTitle(...)` / `setSubtitle(...)` (self-inflating; don't nest children in XML).
-- `ScrollingFrame::setContentView(view)` — vertical, single child.
-- `core/task.hpp` is `RepeatingTask` only (main-thread periodic) → **no general background Task**.
-  We therefore fetch synchronously in the constructor for this skeleton.
-- Borealis uses `throw`/`typeid` → compile **with** exceptions + RTTI. Do **not** add `-fno-exceptions -fno-rtti`.
-
-## Build system (Makefile)
-
-- `include $(DEVKITPRO)/libnx/switch_rules` (defines `$(LIBNX)`, `$(PORTLIBS)`).
-- `LIBS := -lcurl -lz -lnx` — the `switch-curl` portlib is built with libnx as its TLS backend, so no mbedtls; `borealis.mk` prepends `-ldeko3d -lm`
-- `LIBDIRS := $(PORTLIBS) $(LIBNX)`
-- `include $(TOPDIR)/$(BOREALIS_PATH)/library/borealis.mk` — adds Borealis sources, **deko3d**,
-  **switch-libpulsar**, and `-DBRLS_RESOURCES="romfs:/"`. Must come after `BOREALIS_PATH` + `LIBDIRS`.
-- `ROMFS := romfs` + a rule that merges `lib/borealis/resources/*` into romfs (Borealis loads its
-  fonts/themes from the romfs root).
-- Flags: `-D__SWITCH__ -std=gnu++20`; **no** `-fno-exceptions -fno-rtti`.
+- `render(<App/>, screen)` from `react-tela/render` — React tree drawn onto the
+  runtime's screen canvas; no DOM assumed.
+- **Grid**: compute a rows×cols tile layout in JS; render inside
+  `<Group width={…} height={…} contentHeight={…} scrollTop={…}>` — react-tela's
+  viewport scrolling only moves the `drawImage` source rect, so scrolling is
+  essentially free (same mechanism the NSP forwarder uses).
+- **Navigation**: poll the Web Gamepad in a `requestAnimationFrame` loop →
+  grid focus (d-pad/stick), A = select, B = back, plus `onTouchMove` drag
+  scrolling. Model the interaction code on `switch-nsp-forwarder`'s
+  `src/hooks` + `src/components`.
+- **Focus ring**: rounded `<Rect>` stroke around the focused tile (react-tela
+  has no built-in focus engine — that's our `gamepad.ts` job).
+- **Cover art**: `covers.ts` resolves RomM asset URLs, `fetch()`es the bytes,
+  writes them to an `sdmc:` cache dir via `Switch.writeFile`, then the tile
+  renders `<Image src="sdmc:/…">` (async load, placeholder until ready).
+- **Exit**: NSP-installed → the Home button suspends the app natively. No
+  custom quit needed.
 
 ## Build & run
 
-1. `./setup.sh` — installs the devkitPro toolchain (`switch-dev` group: devkitA64, libnx,
-   deko3d, uam), the portlibs (`switch-curl`, `switch-glm`, `switch-glfw`, `switch-mesa`),
-   and the Borealis submodule. (`--build` also builds; `--check` only verifies.)
-2. `make -j` → `build/rommate.nro`.
-3. Copy the `.nro` to `sdmc:/switch/rommate/`; write `sdmc:/switch/rommate/config.json`
-   (`{"baseUrl":"http://192.168.1.50:11700","token":"rmm_..."}`).
-4. Launch via a homebrew loader (NX-Shell / Hekate / Atmosphere homebrew menu) on a modded Switch
-   that can reach the RomM instance on the LAN.
+1. **Scaffold**: `npx create-nxjs-app` (pick the canvas/hello-world template,
+   NSP option) → rename to `rommate`; `npm i react react-tela`.
+2. **Build**: `npm run build` (esbuild → `romfs/main.js`) → `npm run nsp`
+   (slim NSP) or `npm run nro` for drop-in dev builds.
+3. **Install**: copy `rommate.nsp` to the Switch, install via Atmosphere
+   (`nsps/`), launch from the homescreen → application mode.
+   - First launch: the slim bootstrap auto-downloads the shared nx.js runtime
+     to `sdmc:/nx.js/` (needs Wi-Fi once) — or pre-place the release NRO there.
+4. **Configure**: in-app Settings screen writes `baseUrl` + `token`
+   (`rmm_…`) to `localStorage` (Save Data) — no more hand-editing an SD
+   `config.json`.
+5. Dev loop: `npm run nro` → drop in `sdmc:/switch/` → homebrew menu (applet
+   mode: works, CPU raster — fine for UI iteration; use the NSP for perf).
 
 ## Risks / open items
 
-- **Borealis is WIP** — pin the submodule commit; expect occasional API churn.
-- **deko3d** is a hard dependency of the new Borealis (rendering backend) — it ships as a core package of the devkitPro pacman `switch-dev` group, so `setup.sh` picks it up automatically.
-- Cover-art download is **stubbed** (placeholder poster); real per-game covers → next step.
-- Confirm the `/api/roms` `assets` field shape against your instance's `openapi.json`.
+- **react-tela is explicitly in development** ("expect breaking changes") →
+  pin an exact version in `package.json`; upstream is same-author, actively
+  maintained, and proven by the NSP forwarder.
+- **nx.js is 1.0.0-beta** → pin `[runtime] version`; multiple runtime versions
+  coexist on the SD, each app picks the highest compatible.
+- **Gamepad button indices** — confirm the Web Gamepad index ↔ Switch button
+  mapping (it lives in the runtime's `gamepad.cc`; cross-check the forwarder's
+  hook).
+- **WASM** (only if we adopt `@react-tela/flex`/Yoga later): needs JIT — fine
+  in application mode; would need `[v8] wasm = on` + memory in applet mode.
+  v1 avoids it via manual grid layout.
+- **Cover-art URL shape** drifts across RomM versions → defensive parse, check
+  your instance's `openapi.json` (v1's open risk, carried over).
+- **Bundle/heap**: React + react-tela is small, but keep an eye on the V8 heap
+  in applet mode if we ever ship NRO-only (`[memory] heap_limit` clamps there).
 
-## Next iteration (out of scope here)
+## Next iteration
 
-- In-app token / base-URL entry screen (persisted to the SD JSON).
-- Real cover-art download → SD cache → `setImageFromFile`.
-- Game detail screen, WebSocket (socket.io) live updates, device-pairing flow.
+- Game detail screen (screenshots, metadata) on A-press.
+- `WebSocket` live updates (library changes) — the runtime has it.
+- Search / platform filter row.
+- Real per-game covers at full res + lazy load while scrolling.
+- `--fat` build for distribution without the shared runtime.
