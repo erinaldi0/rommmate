@@ -126,6 +126,7 @@ rommmate/
 │  ├─ hooks/
 │  │  ├─ use-gamepad.ts     # rAF input loop: edge-triggered buttons, auto-repeat, stick
 │  │  ├─ use-drag-scroll.ts # touch drag → scroll offset
+│  │  ├─ use-canvas-tap.ts  # tap (touch or mouse) → logical canvas coordinates
 │  │  └─ use-tick.ts        # coarse interval re-render (loading feedback)
 │  └─ components/
 │     ├─ Header.tsx         # title + status line + build stamp (shared by every screen)
@@ -147,6 +148,7 @@ rommmate/
 │     ├─ build.mjs          # esbuild bundle for the harness
 │     ├─ raf-shim.ts        # headless Chrome only paints one frame — keep rAF alive
 │     ├─ shot.mjs           # CDP screenshot at a real-time offset (mid-download states)
+│     ├─ click.mjs          # CDP mouse click at a point, reads the title trace (drives the touch path)
 │     ├─ proxy.mjs          # CORS proxy in front of a real RomM instance (the preview can't hit it directly)
 │     └─ bands.mjs / probe.mjs / ascii.mjs   # layout inspection from the terminal
 └─ (output) rommate.nro / rommate.nsp
@@ -294,6 +296,19 @@ Done in v0.8:
 
   (nx.js has no `Worker` — it is a single V8 thread — so "background" here
   means off the input/repaint path, which the network work already is.)
+
+Done in v0.8.1:
+
+- Touch on the settings screen: tapping a row does what A on that row does
+  — the Switch is a touchscreen and a finger is the primary pointer. Tapping
+  a field while a connection is in flight cancels the walk and opens the
+  keyboard pre-filled: with saved credentials the app auto-connects on
+  launch, so that is the only way to fix a fat-fingered URL without waiting
+  the walk out.
+- `use-canvas-tap` hook (canvas `touchstart`/`mousedown`, structural event
+  types, ref-stable callback — same pattern as `use-drag-scroll`) and
+  `click.mjs` (CDP mouse click + title-trace readout, for driving the touch
+  path from the terminal).
 
 Still open:
 

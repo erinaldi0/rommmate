@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Rect, Text, useDimensions } from 'react-tela';
 import { SwkbdType } from '@nx.js/constants';
 import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
+import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { getVirtualKeyboard } from '../vk';
 import { BUILD_ID } from '../version';
 import type { Config } from '../config';
@@ -42,8 +43,19 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	const pending = useRef<Field | null>(null);
 	const vk = getVirtualKeyboard();
 
-	function openField(field: Field) {
-		if (!vk || busy) return;
+	/**
+	 * Open the on-screen keyboard for a field.
+	 *
+	 * `force` is for the user explicitly asking to change a field while a
+	 * connection is in flight (a tap on the row, or A/ZR on it): the walk
+	 * is running on the values being edited anyway, so cancel it and let
+	 * the edit happen — otherwise a launch with saved credentials would
+	 * leave the rows untouchable for the whole load.
+	 */
+	function openField(field: Field, force = false) {
+		if (!vk) return;
+		if (busy && !force) return;
+		if (busy) onCancel?.();
 		pending.current = field;
 		vk.type = SwkbdType.Normal;
 		vk.okButtonText = 'Done';
@@ -88,8 +100,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	useGamepadButton(
 		'A',
 		() => {
-			if (focus === 0) openField('baseUrl');
-			else if (focus === 1) openField('token');
+			if (focus === 0) openField('baseUrl', true);
+			else if (focus === 1) openField('token', true);
 			else if (focus === 2) {
 				if (!busy) onSave(cfg);
 			} else onDemo();
@@ -99,8 +111,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	useGamepadButton(
 		'ZR',
 		() => {
-			if (focus === 0) openField('baseUrl');
-			else if (focus === 1) openField('token');
+			if (focus === 0) openField('baseUrl', true);
+			else if (focus === 1) openField('token', true);
 		},
 		[focus],
 	);
@@ -115,8 +127,25 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		[busy, onCancel],
 	);
 
+	// A finger is the primary pointer on the Switch: tapping a row does
+	// exactly what A on that row does (openField / onSave / onDemo each
+	// guard `busy` themselves, so no extra gate is needed here).
 	const cx = dims.width / 2;
 	const rowX = cx - ROW_W / 2;
+
+	useCanvasTap(true, ({ x, y }) => {
+		for (let i = 0; i < ROWS.length; i++) {
+			const ry = ROW_TOP + i * (ROW_H + ROW_GAP);
+			if (x < rowX || x > rowX + ROW_W || y < ry || y > ry + ROW_H) continue;
+			setFocus(i);
+			if (i === 0) openField('baseUrl', true);
+			else if (i === 1) openField('token', true);
+			else if (i === 2) {
+				if (!busy) onSave(cfg);
+			} else onDemo();
+			return;
+		}
+	});
 
 	const rowValue = (i: number): string => {
 		if (i === 0) return pending.current === 'baseUrl' && draft !== '' ? draft : cfg.baseUrl || '(not set)';
@@ -194,7 +223,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			)}
 
 			<Text x={cx} y={dims.height - 52} fontSize={22} fill="#6a6a85" textAlign="center">
-				A / ZR to edit a field · A on “Save & Connect” to sign in · A on “Demo mode” to skip
+				tap a field (or A / ZR) to edit · A on “Save & Connect” to sign in · A on “Demo mode” to skip
 			</Text>
 		</>
 	);
