@@ -10,6 +10,7 @@
  */
 import { Button } from '@nx.js/constants';
 import { type DependencyList, useCallback, useEffect } from 'react';
+import { getVirtualKeyboard, type VirtualKeyboardLike } from '../vk';
 
 export type ButtonName = keyof typeof Button;
 type Direction = Extract<ButtonName, 'Up' | 'Down' | 'Left' | 'Right'>;
@@ -25,22 +26,6 @@ interface CallbackConfig {
 
 const defaultInitialDelay = 500;
 const defaultRepeatDelay = 100;
-
-// nx.js exposes a VirtualKeyboard global on navigator; pausing the gamepad
-// loop while it is up prevents input "leakage" into the app behind it.
-interface VirtualKeyboardLike {
-	boundingRect: { height: number };
-	addEventListener(type: string, listener: () => void): void;
-}
-
-function getVirtualKeyboard(): VirtualKeyboardLike | null {
-	try {
-		const vk = (navigator as unknown as { virtualKeyboard?: VirtualKeyboardLike }).virtualKeyboard;
-		return vk ?? null;
-	} catch {
-		return null;
-	}
-}
 
 class GamepadLoop {
 	running = false;

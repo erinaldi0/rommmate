@@ -1,102 +1,67 @@
-import React, { useEffect, useState } from 'react';
-import { Circle, Rect, Text, useDimensions } from 'react-tela';
-import { AppletType } from '@nx.js/constants';
-import { useGamepadButton } from './hooks/use-gamepad';
+import React, { useCallback, useEffect, useState } from 'react';
+import { hasConfig, loadConfig, saveConfig, type Config } from './config';
+import { RommClient, type RommGame } from './romm';
+import { SettingsScreen } from './components/SettingsScreen';
+import { LibraryGrid } from './components/LibraryGrid';
 
-function describeMode(): string {
-	try {
-		switch (Switch.appletType()) {
-			case AppletType.Application:
-				return 'Application (full memory, GPU canvas)';
-			case AppletType.LibraryApplet:
-				return 'Library applet (hbmenu — reduced memory, CPU canvas)';
-			case AppletType.SystemApplet:
-			case AppletType.OverlayApplet:
-				return 'System applet (reduced memory)';
-			default:
-				return `unknown (${Switch.appletType()})`;
-		}
-	} catch {
-		return 'unknown';
-	}
-}
+type Route = 'settings' | 'library';
 
-/**
- * Stack smoke test: proves rendering (react-tela on the Switch canvas),
- * gamepad input (Web Gamepad) and touch input in one screen.
- */
 export function App() {
-	const dims = useDimensions();
-	const [mode] = useState(describeMode);
-	const [padId, setPadId] = useState('no controller');
-	const [lastInput, setLastInput] = useState('—');
-	const [presses, setPresses] = useState(0);
-	const [touches, setTouches] = useState(0);
-	const [touchPos, setTouchPos] = useState<{ x: number; y: number } | null>(null);
+	const [cfg, setCfg] = useState<Config>(loadConfig);
+	const [route, setRoute] = useState<Route>('settings');
+	const [games, setGames] = useState<RommGame[]>([]);
+	const [status, setStatus] = useState('');
+	const [busy, setBusy] = useState(false);
 
-	// Poll for a connected controller (its id shows hardware identity).
-	useEffect(() => {
-		const id = setInterval(() => {
-			const gp = navigator.getGamepads()[0];
-			if (gp && gp.id) setPadId(gp.id);
-		}, 1000);
-		return () => clearInterval(id);
+	const connect = useCallback(async (config: Config) => {
+		setBusy(true);
+		setStatus('Connecting…');
+
+		const client = new RommClient(config.baseUrl, config.token);
+
+		const authErr = await client.authenticate();
+		if (authErr !== null) {
+			setBusy(false);
+			setStatus(`Connection failed: ${authErr}`);
+			return;
+		}
+
+		setStatus('Loading library…');
+		const { games: gs, error } = await client.getGames();
+		setBusy(false);
+
+		if (error !== null) {
+			setStatus(`Library failed: ${error}`);
+			return;
+		}
+
+		// On failure we deliberately stay on the settings screen so the user
+		// can fix the credentials; the screen is only left on success.
+		setGames(gs);
+		setStatus(gs.length > 0 ? `Loaded ${gs.length} games` : 'Library is empty');
+		setRoute('library');
 	}, []);
 
-	const press = (name: string) => () => {
-		setLastInput(name);
-		setPresses((p) => p + 1);
-	};
+	// Auto-connect at startup when credentials are already saved.
+	useEffect(() => {
+		if (hasConfig(cfg)) void connect(cfg);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 
-	useGamepadButton('A', press('A'));
-	useGamepadButton('B', press('B'));
-	useGamepadButton('X', press('X'));
-	useGamepadButton('Y', press('Y'));
-	useGamepadButton('Up', press('D-Pad Up'));
-	useGamepadButton('Down', press('D-Pad Down'));
-	useGamepadButton('Left', press('D-Pad Left'));
-	useGamepadButton('Right', press('D-Pad Right'));
+	function saveAndConnect(next: Config) {
+		saveConfig(next);
+		setCfg(next);
+		void connect(next);
+	}
 
-	const cx = dims.width / 2;
+	function backToSettings() {
+		setRoute('settings');
+		setStatus('');
+	}
 
-	return (
-		<>
-			{/* Full-screen background doubles as the touch surface. */}
-			<Rect
-				width={dims.width}
-				height={dims.height}
-				fill="#101018"
-				onTouchMove={(e) => {
-					const t = e.changedTouches[0];
-					setTouches((n) => n + 1);
-					setTouchPos({ x: t.clientX, y: t.clientY });
-				}}
-			/>
-
-			<Text x={cx} y={64} fontSize={72} fill="#ffffff" textAlign="center">
-				RomMmate
-			</Text>
-			<Text x={cx} y={160} fontSize={28} fill="#9a9ab0" textAlign="center">
-				nx.js + react-tela — stack smoke test
-			</Text>
-
-			<Text x={cx} y={248} fontSize={26} fill="#c8c8e0" textAlign="center">
-				{`Mode: ${mode}`}
-			</Text>
-			<Text x={cx} y={296} fontSize={26} fill="#c8c8e0" textAlign="center">
-				{`Controller: ${padId}`}
-			</Text>
-			<Text x={cx} y={344} fontSize={26} fill="#c8c8e0" textAlign="center">
-				{`Last: ${lastInput}   ·   Button presses: ${presses}   ·   Touch moves: ${touches}`}
-			</Text>
-
-			{touchPos && (
-				<Circle x={touchPos.x - 18} y={touchPos.y - 18} radius={18} fill="#e6e6fa" alpha={0.85} />
-			)}
-
-			<Text x={cx} y={664} fontSize={24} fill="#6a6a85" textAlign="center">
-				Touch anywhere · press gamepad buttons to see them above · Home to quit
-			</Text>
-		</>
+	return route === 'settings' ? (
+		<SettingsScreen initial={cfg} status={status} busy={busy} onSave={saveAndConnect} />
+	) : (
+		<LibraryGrid games={games} status={status} onBack={backToSettings} />
 	);
 }
