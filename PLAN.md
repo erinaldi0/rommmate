@@ -85,6 +85,15 @@ The dialect is sniffed from the shape of the first page (a legacy-shaped
 sniff is discarded and the walk restarts in the legacy dialect). The walk
 stops on a short page, the reported total, a page that adds nothing new
 (a server that will not advance → `truncated`), or a 50-page safety cap.
+
+Pages are fetched **four at a time** (`Promise.allSettled` batches): the
+network is the slow part and nx.js's `fetch` runs off the V8 thread, so the
+UI keeps its input loop and repaints while the walk is in flight, and a
+13-page library lands in three waves instead of a thirteen-step waterfall.
+Offset reservations advance by the server's *echoed* `limit` (the smallest
+seen), so a server that caps page sizes can only cause harmless overlap,
+never gaps. An `AbortSignal` cancels the walk (in-flight pages reject on
+their own) and it comes back as `{ error: 'cancelled' }`.
 **Re-validate against your instance's `openapi.json`** — the v1 C++ parser
 in the initial commit is the historical reference.
 
@@ -107,6 +116,8 @@ rommmate/
 │  ├─ config.ts             # baseUrl + token via localStorage (Save Data)
 │  ├─ mock.ts               # mocked library used by the "Demo mode" entry
 │  ├─ covers.ts             # cover URL → fetch → cache to sdmc:/… → <Image src>
+│  ├─ activity.ts           # tiny pub/sub for background work (library walk,
+│  │                        # artwork prefetch) — rendered by the top-right badge
 │  ├─ theme.ts              # colours, spacing, radii, type scale (canvas has no CSS)
 │  ├─ text.ts               # measure / wrap / truncate (react-tela <Text> cannot do it)
 │  ├─ vk.ts                 # structural type for the runtime's on-screen keyboard
@@ -126,7 +137,8 @@ rommmate/
 │     ├─ GameDetail.tsx     # artwork, screenshot, metadata, summary
 │     ├─ Spinner.tsx        # tick-driven dots: "something is loading"
 │     ├─ EmptyState.tsx     # "nothing here" placeholder
-│     ├─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row
+│     ├─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row (B cancels)
+│     ├─ ActivityBadge.tsx  # top-right toast: what background work is in flight
 │     └─ FatalError.tsx     # last-resort error screen
 ├─ tools/
 │  ├─ build.mjs             # esbuild → romfs/main.js + build id stamping
@@ -262,6 +274,26 @@ Done in v0.7:
   instance with 1266 roms.
 - `proxy.mjs` + `?base=`/`?token`: the preview can now browse a real library
   through a local CORS proxy.
+
+Done in v0.8:
+
+- Non-blocking startup: the library walk runs in **parallel batches of four**
+  pages (the 13-page 1266-rom library now lands in ~14s instead of ~27s), and
+  nx.js's `fetch` runs off the V8 thread, so the event loop, status line, and
+  gamepad polling stay live the whole time.
+- **Cancel**: the walk takes an `AbortSignal`; B on the settings screen
+  aborts it (the row reads `connecting… · B to cancel`), and a generation
+  counter makes a late walk unable to stomp state the user has left — the
+  "press Demo mid-load and get stomped when it completes" bug is fixed.
+- **Background-activity badge** (top-right, every screen): a tiny React-free
+  pub/sub (`activity.ts`) that the library walk and the artwork prefetch report
+  into, rendered by `ActivityBadge` via `useSyncExternalStore`. It shows e.g.
+  `Library 900 / 1266` while the walk runs and `Artwork N downloading` while
+  covers stream in, and is unmounted entirely when idle. No timers — it only
+  repaints when a label actually changes.
+
+  (nx.js has no `Worker` — it is a single V8 thread — so "background" here
+  means off the input/repaint path, which the network work already is.)
 
 Still open:
 

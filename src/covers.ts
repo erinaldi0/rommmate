@@ -14,6 +14,7 @@
  * Every failure path is silent by design: a missing or broken cover must
  * never take the app down, it just means the tile keeps its placeholder.
  */
+import { setActivity } from './activity';
 /** The subset of the nx.js `Switch` namespace that the cache needs. */
 interface SwitchLike {
 	writeFile(path: string, data: string | BufferSource): Promise<void>;
@@ -33,6 +34,15 @@ const resolved = new Map<string, string>();
 const inFlight = new Map<string, Promise<string>>();
 
 let authToken = '';
+
+/**
+ * Mirror the in-flight artwork count into the background-activity store,
+ * so the top-right badge shows the prefetch working (and goes quiet when
+ * the queue drains).
+ */
+function syncArtworkActivity(): void {
+	setActivity('artwork', inFlight.size > 0 ? `Artwork ${inFlight.size} downloading` : null);
+}
 
 /** Sets the bearer token used for artwork requests. */
 export function configureCovers(token: string): void {
@@ -63,15 +73,18 @@ export function resolveCover(url: string): Promise<string> {
 		(src) => {
 			inFlight.delete(url);
 			if (src !== '') resolved.set(url, src);
+			syncArtworkActivity();
 			return src;
 		},
 		() => {
 			inFlight.delete(url);
+			syncArtworkActivity();
 			return '';
 		},
 	);
 
 	inFlight.set(url, job);
+	syncArtworkActivity();
 	return job;
 }
 

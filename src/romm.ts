@@ -63,6 +63,14 @@ const LEGACY_PAGE_SIZE = 50;
 const MAX_PAGES = 50;
 
 /**
+ * How many pages may be in flight at once. nx.js is a single V8 thread, but
+ * the network is not: fanning the walk out across a few concurrent `fetch`es
+ * turns a 13-page waterfall into three or four waves, while each in-flight
+ * page is only a few hundred KB of JSON.
+ */
+const PAGE_CONCURRENCY = 4;
+
+/**
  * Read one entry of a RomM `assets` object (≤4.x). Asset values come in two
  * shapes across versions:
  *   "box_2d": "/assets/games/123/abc.png"                  (plain path)
@@ -344,10 +352,11 @@ export class RommClient {
 	 *
 	 * @returns null on success, or a human-readable error message.
 	 */
-	async authenticate(): Promise<string | null> {
+	async authenticate(signal?: AbortSignal): Promise<string | null> {
 		try {
 			const res = await fetch(this.#baseUrl + '/api/roms?limit=1', {
 				headers: this.#headers(),
+				signal,
 			});
 			if (res.status === 200) return null;
 			if (res.status === 401 || res.status === 403) return 'invalid RomM API token';
@@ -362,10 +371,11 @@ export class RommClient {
 	 *
 	 * @returns the parsed JSON, or a human-readable error message.
 	 */
-	async #fetchPage(query: string): Promise<{ json: unknown } | { error: string }> {
+	async #fetchPage(query: string, signal?: AbortSignal): Promise<{ json: unknown } | { error: string }> {
 		try {
 			const res = await fetch(this.#baseUrl + '/api/roms?' + query, {
 				headers: this.#headers(),
+				signal,
 			});
 			if (!res.ok) {
 				return { error: `HTTP ${res.status} from /api/roms` };
@@ -419,14 +429,21 @@ export class RommClient {
 	 * page that adds no new roms (a server that will not advance), or on
 	 * the `MAX_PAGES` safety cap.
 	 *
+	 * Pages are fetched `PAGE_CONCURRENCY` at a time: the network is the
+	 * slow part, and nx.js's `fetch` runs off the V8 thread, so the UI
+	 * keeps its input loop and repaints while the walk is in flight.
+	 *
 	 * @param onProgress called after each page with the number of roms
 	 *                   collected so far and the total the server
 	 *                   reported (null when it did not).
+	 * @param signal aborts the walk: in-flight pages are cancelled and the
+	 *               result comes back as `{ error: 'cancelled' }`.
 	 * @returns the parsed games, and/or a human-readable error, and
 	 *          whether the walk stopped before the library was fully read.
 	 */
 	async getGames(
 		onProgress?: (loaded: number, total: number | null) => void,
+		signal?: AbortSignal,
 	): Promise<{ games: RommGame[]; error: string | null; truncated: boolean }> {
 		const games: RommGame[] = [];
 		const seen = new Set<string>();
@@ -457,9 +474,11 @@ export class RommClient {
 		let rounds = 0;
 
 		// 1. Sniff the dialect with a modern-style first page.
-		const first = await this.#fetchPage(modernQuery(PAGE_SIZE, 0));
+		const first = await this.#fetchPage(modernQuery(PAGE_SIZE, 0), signal);
 		if ('error' in first) {
-			return { games: [], error: first.error, truncated: false };
+			return signal?.aborted
+				? { games: [], error: 'cancelled', truncated: false }
+				: { games: [], error: first.error, truncated: false };
 		}
 		const firstPage = parsePage(first.json);
 		if (firstPage === null) {
@@ -473,6 +492,11 @@ export class RommClient {
 
 		let modernOffset = 0;
 		let legacyPage = 1;
+		// How much of the result set one page actually covers. Reserved
+		// offsets advance by this (not by the requested size): a server
+		// that caps the page size would otherwise leave gaps, while a
+		// smaller step can only overlap — and overlaps deduplicate away.
+		let effectiveLimit = PAGE_SIZE;
 
 		if (firstPage.modern) {
 			// The modern server honoured the request: page 1 is usable.
@@ -495,6 +519,7 @@ export class RommClient {
 			// The echoed `limit` is the page size the server actually used
 			// (it may cap a larger request); a full page has that many.
 			const eff = nonNegNumber((first.json as Record<string, unknown>)['limit']) ?? PAGE_SIZE;
+			effectiveLimit = Math.min(effectiveLimit, eff);
 			const full = firstPage.items.length >= eff;
 			if (!full) {
 				exhausted = true;
@@ -509,61 +534,115 @@ export class RommClient {
 
 		onProgress?.(games.length, total);
 
-		// 2. Walk the remaining pages until the library is exhausted.
-		while (!exhausted && rounds < MAX_PAGES) {
-			const query = modern
-				? modernQuery(PAGE_SIZE, modernOffset)
-				: `_limit=${LEGACY_PAGE_SIZE}&_page=${legacyPage}`;
-
-			const page = await this.#fetchPage(query);
-			if ('error' in page) {
-				// A mid-walk failure is a hard failure: partial libraries
-				// silently lose their filter chips and totals.
-				return { games: [], error: page.error, truncated: false };
+		// 2. Walk the remaining pages in parallel batches until the library
+		//    is exhausted. Page coordinates are reserved before the batch
+		//    fires (the walk must keep advancing to terminate) and results
+		//    are processed in request order, so the library keeps the
+		//    server's ordering even if the pages land in any order.
+		while (!exhausted && rounds < MAX_PAGES && !signal?.aborted) {
+			const queries: string[] = [];
+			for (let i = 0; i < PAGE_CONCURRENCY; i++) {
+				if (exhausted || rounds >= MAX_PAGES || signal?.aborted) break;
+				if (total !== null && games.length >= total) {
+					exhausted = true;
+					break;
+				}
+				// With a known total, reserve only as many pages as the
+				// library still needs — nothing is fetched past the end.
+				// (If the library grows mid-walk, the fresh total from the
+				// last page keeps the walk going; a short page is the
+				// final arbiter either way.)
+				if (modern && total !== null && i >= Math.ceil((total - games.length) / effectiveLimit)) {
+					break;
+				}
+				queries.push(
+					modern
+						? modernQuery(PAGE_SIZE, modernOffset)
+						: `_limit=${LEGACY_PAGE_SIZE}&_page=${legacyPage}`,
+				);
+				if (modern) {
+					modernOffset += effectiveLimit;
+				} else {
+					// `_page` is 1-based and the server computes the window
+					// from its own effective limit, so no gaps are possible.
+					legacyPage += 1;
+				}
+				rounds += 1;
 			}
-			const shape = parsePage(page.json);
-			if (shape === null) {
-				return {
-					games: [],
-					error: 'unexpected response shape from /api/roms',
-					truncated: false,
-				};
+			if (queries.length === 0) break;
+
+			const results = await Promise.allSettled(
+				queries.map((q) => this.#fetchPage(q, signal)),
+			);
+
+			for (const result of results) {
+				// Aborted: the remaining in-flight pages reject on their
+				// own; the walk simply stops caring about them.
+				if (signal?.aborted) {
+					return { games: [], error: 'cancelled', truncated: false };
+				}
+				if (result.status === 'rejected') {
+					return signal?.aborted
+						? { games: [], error: 'cancelled', truncated: false }
+						: {
+								games: [],
+								error: `cannot reach RomM (${String(result.reason)})`,
+								truncated: false,
+							};
+				}
+				if ('error' in result.value) {
+					// A mid-walk failure is a hard failure: partial libraries
+					// silently lose their filter chips and totals.
+					return { games: [], error: result.value.error, truncated: false };
+				}
+				const shape = parsePage(result.value.json);
+				if (shape === null) {
+					return {
+						games: [],
+						error: 'unexpected response shape from /api/roms',
+						truncated: false,
+					};
+				}
+				if (shape.total !== null) total = shape.total;
+
+				// A full page has as many entries as the server actually
+				// served (its echoed `limit` on 5.x, our request on ≤4.x).
+				const eff = modern
+					? (nonNegNumber((result.value.json as Record<string, unknown>)['limit']) ?? PAGE_SIZE)
+					: LEGACY_PAGE_SIZE;
+				const full = shape.items.length >= eff;
+				if (modern) {
+					effectiveLimit = Math.min(effectiveLimit, eff);
+				}
+
+				if (!full) {
+					exhausted = true;
+				}
+
+				const added = addPage(shape.items);
+
+				// A full page that contains nothing new means the server is
+				// not advancing (it ignores the page parameters): stop, and
+				// mark the walk as truncated because the library may
+				// continue beyond it.
+				if (!exhausted && full && shape.items.length > 0 && added === 0) {
+					exhausted = true;
+					truncated = true;
+				}
+
+				if (!exhausted && total !== null && games.length >= total) {
+					exhausted = true;
+				}
+
+				onProgress?.(games.length, total);
 			}
-			if (shape.total !== null) total = shape.total;
+		}
 
-			rounds += 1;
-			if (modern) {
-				modernOffset += shape.items.length;
-			} else {
-				legacyPage += 1;
-			}
-
-			// A full page has as many entries as the server actually
-			// served (its echoed `limit` on 5.x, our request on ≤4.x).
-			const eff = modern
-				? (nonNegNumber((page.json as Record<string, unknown>)['limit']) ?? PAGE_SIZE)
-				: LEGACY_PAGE_SIZE;
-			const full = shape.items.length >= eff;
-
-			if (!full) {
-				exhausted = true;
-			}
-
-			const added = addPage(shape.items);
-
-			// A full page that contains nothing new means the server is not
-			// advancing (it ignores the page parameters): stop, and mark the
-			// walk as truncated because the library may continue beyond it.
-			if (!exhausted && full && shape.items.length > 0 && added === 0) {
-				exhausted = true;
-				truncated = true;
-			}
-
-			if (!exhausted && total !== null && games.length >= total) {
-				exhausted = true;
-			}
-
-			onProgress?.(games.length, total);
+		// Aborted (possibly between batches, where the loop exits quietly):
+		// report it, so a caller cannot mistake a partial walk for a
+		// completed one.
+		if (signal?.aborted) {
+			return { games: [], error: 'cancelled', truncated: false };
 		}
 
 		// Leaving the loop with the last page still full means the safety

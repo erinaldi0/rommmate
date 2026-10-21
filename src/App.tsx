@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { hasConfig, loadConfig, saveConfig, type Config } from './config';
 import { configureCovers } from './covers';
+import { setActivity } from './activity';
 import { onFatalError } from './errors';
 import { RommClient, type RommGame } from './romm';
 import { MOCK_GAMES } from './mock';
@@ -8,6 +9,7 @@ import { FatalError } from './components/FatalError';
 import { SettingsScreen } from './components/SettingsScreen';
 import { LibraryGrid } from './components/LibraryGrid';
 import { GameDetail } from './components/GameDetail';
+import { ActivityBadge } from './components/ActivityBadge';
 
 type Route = 'settings' | 'library' | 'detail';
 
@@ -23,6 +25,14 @@ export function App() {
 	/** The game the detail screen is showing. */
 	const [detail, setDetail] = useState<RommGame | null>(null);
 
+	/**
+	 * Monotonic counter of connection attempts, plus the aborter of the
+	 * current one: both let the app ignore (and stop) a walk the user has
+	 * already walked away from.
+	 */
+	const runGen = useRef(0);
+	const aborter = useRef<AbortController | null>(null);
+
 	// Anything that blows up while rendering is surfaced on screen instead of
 	// leaving a half-drawn frame behind.
 	useEffect(() => onFatalError(setFatal), []);
@@ -35,25 +45,48 @@ export function App() {
 	}, [cfg.token]);
 
 	const connect = useCallback(async (config: Config) => {
+		// Each connection attempt gets a generation number: a late result
+		// (or a walk the user abandoned) must never write state the user
+		// has already left.
+		runGen.current += 1;
+		const gen = runGen.current;
+		const controller = new AbortController();
+		aborter.current = controller;
+
 		setBusy(true);
 		setStatus('Connecting…');
 
 		const client = new RommClient(config.baseUrl, config.token);
 
-		const authErr = await client.authenticate();
+		const authErr = await client.authenticate(controller.signal);
+		if (gen !== runGen.current) return;
 		if (authErr !== null) {
 			setBusy(false);
-			setStatus(`Connection failed: ${authErr}`);
+			setStatus(controller.signal.aborted ? 'Connection cancelled' : `Connection failed: ${authErr}`);
 			return;
 		}
 
 		setStatus('Loading library…');
 		const { games: gs, error, truncated } = await client.getGames(
-			(loaded, total) =>
-				setStatus(`Loading library… ${loaded}${total !== null ? ` / ${total}` : ''}`),
+			(loaded, total) => {
+				if (gen !== runGen.current) return;
+				setStatus(`Loading library… ${loaded}${total !== null ? ` / ${total}` : ''}`);
+				setActivity(
+					'library',
+					total !== null ? `Library ${loaded} / ${total}` : `Library ${loaded}+`,
+				);
+			},
+			controller.signal,
 		);
-		setBusy(false);
+		if (gen !== runGen.current) return;
 
+		setBusy(false);
+		setActivity('library', null);
+
+		if (controller.signal.aborted) {
+			setStatus('Connection cancelled');
+			return;
+		}
 		if (error !== null) {
 			setStatus(`Library failed: ${error}`);
 			return;
@@ -69,6 +102,15 @@ export function App() {
 		);
 		setRoute('library');
 	}, []);
+
+	/** Cancel the in-flight connection (B on the settings screen). */
+	function cancelConnect() {
+		runGen.current += 1;
+		aborter.current?.abort();
+		setBusy(false);
+		setStatus('Connection cancelled');
+		setActivity('library', null);
+	}
 
 	// Auto-connect at startup when credentials are already saved.
 	useEffect(() => {
@@ -86,7 +128,12 @@ export function App() {
 
 	// Skip the login entirely: fill the library with mocked games so the app
 	// can be used (and the next screens developed) without a RomM server.
+	// A walk still running is abandoned so it cannot stomp the mock data.
 	function startDemo() {
+		runGen.current += 1;
+		aborter.current?.abort();
+		setActivity('library', null);
+		setBusy(false);
 		setDemo(true);
 		setGames(MOCK_GAMES);
 		setStatus(`Demo mode — ${MOCK_GAMES.length} mock games`);
@@ -112,13 +159,17 @@ export function App() {
 
 	if (route === 'settings') {
 		return (
-			<SettingsScreen
-				initial={cfg}
-				status={status}
-				busy={busy}
-				onSave={saveAndConnect}
-				onDemo={startDemo}
-			/>
+			<>
+				<SettingsScreen
+					initial={cfg}
+					status={status}
+					busy={busy}
+					onSave={saveAndConnect}
+					onDemo={startDemo}
+					onCancel={cancelConnect}
+				/>
+				<ActivityBadge />
+			</>
 		);
 	}
 
@@ -142,6 +193,7 @@ export function App() {
 				// (which artwork is loading) never leaks into the next one.
 				<GameDetail key={detail.id} game={detail} onBack={closeDetail} />
 			)}
+			<ActivityBadge />
 		</>
 	);
 }

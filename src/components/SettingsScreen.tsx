@@ -16,6 +16,8 @@ interface Props {
 	onSave: (cfg: Config) => void;
 	/** Skip the login and open the library with mocked data. */
 	onDemo: () => void;
+	/** Cancel the in-flight connection (B, while busy). */
+	onCancel?: () => void;
 }
 
 type Field = 'baseUrl' | 'token';
@@ -32,7 +34,7 @@ function mask(v: string): string {
 	return v.slice(0, 10) + '•'.repeat(Math.min(16, v.length - 10));
 }
 
-export function SettingsScreen({ initial, status, busy, onSave, onDemo }: Props) {
+export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel }: Props) {
 	const dims = useDimensions();
 	const [cfg, setCfg] = useState<Config>(initial);
 	const [focus, setFocus] = useState(0);
@@ -103,13 +105,23 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo }: Props)
 		[focus],
 	);
 
+	// B cancels a connection in flight; the walk is a long one, and the
+	// user may have fat-fingered a URL.
+	useGamepadButton(
+		'B',
+		() => {
+			if (busy && onCancel) onCancel();
+		},
+		[busy, onCancel],
+	);
+
 	const cx = dims.width / 2;
 	const rowX = cx - ROW_W / 2;
 
 	const rowValue = (i: number): string => {
 		if (i === 0) return pending.current === 'baseUrl' && draft !== '' ? draft : cfg.baseUrl || '(not set)';
 		if (i === 1) return pending.current === 'token' && draft !== '' ? draft : mask(cfg.token);
-		if (i === 2) return busy ? 'connecting…' : 'A to save & open library';
+		if (i === 2) return busy ? 'connecting… · B to cancel' : 'A to save & open library';
 		return 'A to skip the login and browse mock games';
 	};
 
