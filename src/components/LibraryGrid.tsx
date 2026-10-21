@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Group, Image, Rect, Text, useDimensions } from 'react-tela';
+import { Image, Rect, Text, useDimensions } from 'react-tela';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
+import { BUILD_ID } from '../version';
 import type { RommGame } from '../romm';
 
 const COLS = 4;
@@ -22,12 +23,22 @@ interface Props {
 	/** Status line from the client (load result, etc.). */
 	status: string;
 	onBack: () => void;
+	/** Initial scroll offset (preview harness only; defaults to the top). */
+	initialScroll?: number;
+	/** Initially focused tile index (preview harness only). */
+	initialFocus?: number;
 }
 
-export function LibraryGrid({ games, status, onBack }: Props) {
+export function LibraryGrid({
+	games,
+	status,
+	onBack,
+	initialScroll = 0,
+	initialFocus = 0,
+}: Props) {
 	const dims = useDimensions();
-	const [focus, setFocus] = useState(0);
-	const [scrollTop, setScrollTop] = useState(0);
+	const [focus, setFocus] = useState(initialFocus);
+	const [scrollTop, setScrollTop] = useState(initialScroll);
 	const [selected, setSelected] = useState('');
 
 	const rows = Math.max(1, Math.ceil(games.length / COLS));
@@ -74,79 +85,131 @@ export function LibraryGrid({ games, status, onBack }: Props) {
 	// Touch: drag to scroll.
 	const lastTouch = useRef<{ x: number; y: number } | null>(null);
 
-	const tiles = games.map((g, i) => {
+	// Only the rows that intersect the viewport are emitted. react-tela's
+	// <Group> viewport (offscreen canvas + drawImage) is avoided for the same
+	// reason as on the settings screen: culling gives the same result without
+	// any offscreen compositing.
+	const firstRow = Math.max(0, Math.floor(scrollTop / TILE_H));
+	const lastRow = Math.min(rows - 1, Math.floor((scrollTop + VIEW_H - 1) / TILE_H));
+
+	const tiles: React.ReactNode[] = [];
+	games.forEach((g, i) => {
+		const row = Math.floor(i / COLS);
+		if (row < firstRow || row > lastRow) return;
+
 		const x = GRID_X + (i % COLS) * (COVER_W + GAP_X);
-		const y = Math.floor(i / COLS) * TILE_H;
+		const y = VIEW_Y + row * TILE_H - scrollTop;
 		const isFocused = i === focus;
-		return (
-			<Group key={g.id || `rom-${i}`} x={x} y={y} width={COVER_W} height={TILE_H}>
-				<Rect width={COVER_W} height={COVER_H} fill="#1c1c2a" borderRadius={8} />
-				{g.coverUrl !== '' && <Image src={g.coverUrl} width={COVER_W} height={COVER_H} />}
-				<Text
-					x={10}
-					y={COVER_H + 10}
-					maxWidth={COVER_W - 20}
-					fontSize={20}
-					lineHeight={1.15}
-					fill={isFocused ? '#ffffff' : '#9a9ab0'}
-					overflow="ellipsis"
-				>
-					{g.name || `Game #${g.id}`}
-				</Text>
-				{isFocused && (
-					<Rect
-						x={-6}
-						y={-6}
-						width={COVER_W + 12}
-						height={TILE_H + 12}
-						stroke="#5b8cff"
-						lineWidth={4}
-						borderRadius={12}
-					/>
-				)}
-			</Group>
+		const key = g.id || `rom-${i}`;
+
+		tiles.push(
+			<Rect
+				key={`${key}-bg`}
+				x={x}
+				y={y}
+				width={COVER_W}
+				height={COVER_H}
+				fill="#1c1c2a"
+				borderRadius={8}
+			/>,
 		);
+		if (g.coverUrl !== '') {
+			tiles.push(
+				<Image
+					key={`${key}-cover`}
+					src={g.coverUrl}
+					x={x}
+					y={y}
+					width={COVER_W}
+					height={COVER_H}
+				/>,
+			);
+		}
+		tiles.push(
+			<Text
+				key={`${key}-title`}
+				x={x + 10}
+				y={y + COVER_H + 10}
+				maxWidth={COVER_W - 20}
+				fontSize={20}
+				lineHeight={1.15}
+				fill={isFocused ? '#ffffff' : '#9a9ab0'}
+				overflow="ellipsis"
+			>
+				{g.name || `Game #${g.id}`}
+			</Text>,
+		);
+		if (isFocused) {
+			tiles.push(
+				<Rect
+					key={`${key}-focus`}
+					x={x - 6}
+					y={y - 6}
+					width={COVER_W + 12}
+					height={COVER_H + 12}
+					stroke="#5b8cff"
+					lineWidth={4}
+					borderRadius={12}
+				/>,
+			);
+		}
 	});
 
 	return (
 		<>
 			<Rect width={dims.width} height={dims.height} fill="#101018" />
 
+			{tiles}
+
+			{/*
+			 * The old <Group> viewport clipped the tiles; without it the
+			 * partially visible top/bottom rows bleed into the header and the
+			 * footer. Two opaque bands mask the overflow, and the chrome is
+			 * drawn on top of them.
+			 */}
+			<Rect x={0} y={0} width={dims.width} height={VIEW_Y} fill="#101018" />
+			<Rect
+				x={0}
+				y={VIEW_Y + VIEW_H}
+				width={dims.width}
+				height={Math.max(0, dims.height - VIEW_Y - VIEW_H)}
+				fill="#101018"
+			/>
+
+			{/* Viewport frame — purely decorative, marks the scroll area. */}
+			<Rect
+				x={VIEW_X + 8}
+				y={VIEW_Y - 6}
+				width={VIEW_W - 16}
+				height={VIEW_H + 12}
+				stroke="#1e1e2c"
+				lineWidth={2}
+				borderRadius={10}
+			/>
+
 			<Text x={24} y={28} fontSize={42} fill="#ffffff">
 				RomMmate
 			</Text>
-			<Text x={dims.width} y={40} fontSize={24} fill="#9a9ab0" textAlign="right">
+			<Text x={dims.width - 24} y={40} fontSize={24} fill="#9a9ab0" textAlign="right">
 				{`${games.length} games`}
 			</Text>
 			<Text x={24} y={80} fontSize={20} fill="#6a6a85">
 				{status}
 			</Text>
+			<Text x={dims.width - 24} y={82} fontSize={16} fill="#4a4a60" textAlign="right">
+				{`build ${BUILD_ID}`}
+			</Text>
 
-			<Group
-				x={VIEW_X}
-				y={VIEW_Y}
-				width={VIEW_W}
-				height={VIEW_H}
-				contentWidth={VIEW_W}
-				contentHeight={contentH}
-				scrollTop={scrollTop}
-				onTouchMove={(e) => {
-					const t = e.changedTouches[0];
-					if (lastTouch.current) {
-						const dy = lastTouch.current.y - t.clientY;
-						setScrollTop((s) => Math.min(maxScroll, Math.max(0, s + dy)));
-					}
-					lastTouch.current = { x: t.clientX, y: t.clientY };
-				}}
-				onTouchEnd={() => {
-					lastTouch.current = null;
-				}}
+			<Text
+				x={dims.width / 2}
+				y={dims.height - 52}
+				fontSize={22}
+				fill={selected !== '' ? '#c8c8e0' : '#6a6a85'}
+				textAlign="center"
 			>
-				{tiles}
-			</Group>
-
-			<Text x={dims.width / 2} y={dims.height - 52} fontSize={22} fill={selected !== '' ? '#c8c8e0' : '#6a6a85'} textAlign="center">
-				{selected !== '' ? `Selected: ${selected}` : 'A select · B back · stick or d-pad to move · drag to scroll'}
+				{selected !== ''
+					? `Selected: ${selected}`
+					: 'A select · B back · stick or d-pad to move · drag to scroll'}
 			</Text>
 		</>
 	);

@@ -10,7 +10,7 @@
     "title": "RomMmate"
   },
   "scripts": {
-    "build": "esbuild --bundle --sourcemap --sources-content=false --target=es2022 --format=esm --define:process.env.NODE_ENV=\\\"production\\\" src/main.tsx --outfile=romfs/main.js",
+    "build": "node tools/build.mjs",
     "nro": "npm run build && nxjs-nro",
     "nsp": "npm run build && nxjs-nsp",
     "typecheck": "tsc"

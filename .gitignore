@@ -6,6 +6,10 @@ dist/
 romfs/main.js
 romfs/*.map
 
+# Preview harness build artifacts
+tools/preview/bundle.js
+tools/preview/*.png
+
 # Packaged executables
 *.nro
 *.nso

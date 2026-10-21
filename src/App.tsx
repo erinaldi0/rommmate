@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { hasConfig, loadConfig, saveConfig, type Config } from './config';
+import { onFatalError } from './errors';
 import { RommClient, type RommGame } from './romm';
+import { FatalError } from './components/FatalError';
 import { SettingsScreen } from './components/SettingsScreen';
 import { LibraryGrid } from './components/LibraryGrid';
 
@@ -12,6 +14,11 @@ export function App() {
 	const [games, setGames] = useState<RommGame[]>([]);
 	const [status, setStatus] = useState('');
 	const [busy, setBusy] = useState(false);
+	const [fatal, setFatal] = useState<string | null>(null);
+
+	// Anything that blows up while rendering is surfaced on screen instead of
+	// leaving a half-drawn frame behind.
+	useEffect(() => onFatalError(setFatal), []);
 
 	const connect = useCallback(async (config: Config) => {
 		setBusy(true);
@@ -58,6 +65,8 @@ export function App() {
 		setRoute('settings');
 		setStatus('');
 	}
+
+	if (fatal !== null) return <FatalError message={fatal} />;
 
 	return route === 'settings' ? (
 		<SettingsScreen initial={cfg} status={status} busy={busy} onSave={saveAndConnect} />

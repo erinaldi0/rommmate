@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Group, Rect, Text, useDimensions } from 'react-tela';
+import { Rect, Text, useDimensions } from 'react-tela';
 import { SwkbdType } from '@nx.js/constants';
 import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
 import { getVirtualKeyboard } from '../vk';
+import { BUILD_ID } from '../version';
 import type { Config } from '../config';
 
 interface Props {
@@ -19,6 +20,9 @@ type Field = 'baseUrl' | 'token';
 
 const ROWS = ['Base URL', 'API Token', 'Save & Connect'] as const;
 const ROW_W = 920;
+const ROW_H = 70;
+const ROW_GAP = 18;
+const ROW_TOP = 230;
 
 function mask(v: string): string {
 	if (!v) return '(not set)';
@@ -106,6 +110,50 @@ export function SettingsScreen({ initial, status, busy, onSave }: Props) {
 
 	const statusError = /fail|cannot|invalid/i.test(status);
 
+	// Rows are emitted as a flat list of root-level entities on purpose.
+	// react-tela's <Group> renders into an offscreen canvas and composites it
+	// back with drawImage(); that path is fragile on the Switch runtime, and a
+	// failure there aborts the whole frame. Absolute positioning keeps every
+	// element on the root canvas, where Rect/Text are known to work.
+	const rowEntities: React.ReactNode[] = [];
+	ROWS.forEach((label, i) => {
+		const y = ROW_TOP + i * (ROW_H + ROW_GAP);
+		const isFocused = i === focus;
+		rowEntities.push(
+			<Rect
+				key={`${label}-bg`}
+				x={rowX}
+				y={y}
+				width={ROW_W}
+				height={ROW_H}
+				fill={isFocused ? '#232338' : '#171722'}
+				stroke={isFocused ? '#5b8cff' : '#262636'}
+				lineWidth={isFocused ? 3 : 1}
+				borderRadius={10}
+			/>,
+			<Text
+				key={`${label}-label`}
+				x={rowX + 24}
+				y={y + 22}
+				fontSize={26}
+				fill={isFocused ? '#ffffff' : '#9a9ab0'}
+			>
+				{label}
+			</Text>,
+			<Text
+				key={`${label}-value`}
+				x={rowX + 280}
+				y={y + 22}
+				maxWidth={ROW_W - 310}
+				fontSize={24}
+				fill="#c8c8e0"
+				overflow="ellipsis"
+			>
+				{rowValue(i)}
+			</Text>,
+		);
+	});
+
 	return (
 		<>
 			<Rect width={dims.width} height={dims.height} fill="#101018" />
@@ -116,32 +164,14 @@ export function SettingsScreen({ initial, status, busy, onSave }: Props) {
 			<Text x={cx} y={150} fontSize={28} fill="#9a9ab0" textAlign="center">
 				RomM settings
 			</Text>
+			<Text x={dims.width - 24} y={34} fontSize={18} fill="#5a5a75" textAlign="right">
+				{`build ${BUILD_ID}`}
+			</Text>
 
-			{ROWS.map((label, i) => {
-				const y = 230 + i * 88;
-				const isFocused = i === focus;
-				return (
-					<Group key={label} x={rowX} y={y} width={ROW_W} height={70} borderRadius={10}>
-						<Rect
-							width={ROW_W}
-							height={70}
-							fill={isFocused ? '#232338' : '#171722'}
-							stroke={isFocused ? '#5b8cff' : '#262636'}
-							lineWidth={isFocused ? 3 : 1}
-							borderRadius={10}
-						/>
-						<Text x={24} y={22} fontSize={26} fill={isFocused ? '#ffffff' : '#9a9ab0'}>
-							{label}
-						</Text>
-						<Text x={280} y={22} maxWidth={ROW_W - 310} fontSize={24} fill="#c8c8e0" overflow="ellipsis">
-							{rowValue(i)}
-						</Text>
-					</Group>
-				);
-			})}
+			{rowEntities}
 
 			{status !== '' && (
-				<Text x={cx} y={530} fontSize={26} fill={statusError ? '#e06060' : '#9a9ab0'} textAlign="center">
+				<Text x={cx} y={560} fontSize={26} fill={statusError ? '#e06060' : '#9a9ab0'} textAlign="center">
 					{status}
 				</Text>
 			)}

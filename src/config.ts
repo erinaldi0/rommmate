@@ -29,8 +29,9 @@ export function saveConfig(cfg: Config): void {
 	try {
 		localStorage?.setItem(KEY_BASE_URL, cfg.baseUrl);
 		localStorage?.setItem(KEY_TOKEN, cfg.token);
-	} catch (err) {
-		console.log(`rommate: failed to persist config: ${String(err)}`);
+	} catch {
+		// Save Data is unavailable (or full) — the session still works, the
+		// credentials just are not remembered across launches.
 	}
 }
 
