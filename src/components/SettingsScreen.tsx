@@ -26,7 +26,9 @@ interface Props {
 
 type Field = 'baseUrl' | 'token';
 
-const ROWS = ['Base URL', 'API Token', 'Save & Connect', 'Demo mode (mock data)', 'Keyboard'] as const;
+// Labels must stay short: the value column starts 280 px in, and a longer
+// label ("Demo mode (mock data)" did) runs straight into the value text.
+const ROWS = ['Base URL', 'API Token', 'Save & Connect', 'Demo mode', 'Keyboard'] as const;
 const ROW_W = 920;
 const ROW_H = 60;
 const ROW_GAP = 12;

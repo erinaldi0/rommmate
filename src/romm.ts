@@ -309,7 +309,14 @@ export class RommClient {
 	constructor(baseUrl: string, token: string) {
 		// Normalise: strip trailing slashes so `baseUrl + path` joining never
 		// produces "http://host//api/...".
-		this.#baseUrl = baseUrl.replace(/\/+$/, '');
+		let base = baseUrl.trim().replace(/\/+$/, '');
+		// A schemeless "host:port" is what people actually type; make the
+		// scheme explicit so every transport (nx.js fetch, preview browser)
+		// resolves it the same way.
+		if (!/^https?:\/\//i.test(base)) {
+			base = `http://${base}`;
+		}
+		this.#baseUrl = base;
 		this.#token = token;
 	}
 
@@ -360,6 +367,12 @@ export class RommClient {
 			});
 			if (res.status === 200) return null;
 			if (res.status === 401 || res.status === 403) return 'invalid RomM API token';
+			// A 404 on /api/roms means the server answered but does not
+			// serve the API at that path — almost always a base-path issue
+			// (RomM behind a reverse proxy at /romm/ or similar).
+			if (res.status === 404) {
+				return 'HTTP 404 from /api/roms — check the Base URL (sub-path?)';
+			}
 			return `server returned HTTP ${res.status}`;
 		} catch (err) {
 			return `cannot reach RomM (${String(err)})`;
