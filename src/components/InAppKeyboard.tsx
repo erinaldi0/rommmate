@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Rect, Text, useDimensions } from 'react-tela';
 import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
@@ -135,12 +135,44 @@ export function InAppKeyboard({ value, note, onChange, onSubmit, onClose }: Prop
 		});
 	}
 
-	useDirection('Left', () => move(0, -1), [rows], true, true, 250, 70);
-	useDirection('Right', () => move(0, 1), [rows], true, true, 250, 70);
-	useDirection('Up', () => move(-1, 0), [rows], true, true, 250, 70);
-	useDirection('Down', () => move(1, 0), [rows], true, true, 250, 70);
-	useGamepadButton('A', () => press(focus.r, focus.c), [rows, focus, value, shift, onChange, onSubmit, onClose], true, true, 250, 70);
-	useGamepadButton('B', onClose, [onClose]);
+	/*
+	 * The callbacks must not be re-created on every keystroke: `value`,
+	 * `focus`, `shift`, and the inline `onSubmit`/`onClose` props all change
+	 * on every character, and a fresh callback identity used to reset the
+	 * repeat timer, so a deliberate A press burst into repeated characters
+	 * ("captured 3 times"). The refs keep the loop's registration stable.
+	 */
+	const pressRef = useRef(press);
+	pressRef.current = press;
+	const moveRef = useRef(move);
+	moveRef.current = move;
+	const focusRef = useRef(focus);
+	focusRef.current = focus;
+	const closeRef = useRef(onClose);
+	closeRef.current = onClose;
+
+	// Only the keys people hold down repeat (back, space). Character keys
+	// never repeat: one deliberate press is exactly one character.
+	const focusKey = rows[focus.r]?.[focus.c];
+	const repeat = focusKey?.act === 'back' || focusKey?.act === 'space';
+
+	useDirection('Left', () => moveRef.current(0, -1), [rows], true, true, 250, 70);
+	useDirection('Right', () => moveRef.current(0, 1), [rows], true, true, 250, 70);
+	useDirection('Up', () => moveRef.current(-1, 0), [rows], true, true, 250, 70);
+	useDirection('Down', () => moveRef.current(1, 0), [rows], true, true, 250, 70);
+	useGamepadButton(
+		'A',
+		() => {
+			const f = focusRef.current;
+			pressRef.current(f.r, f.c);
+		},
+		[repeat],
+		true,
+		repeat,
+		250,
+		70,
+	);
+	useGamepadButton('B', () => closeRef.current(), []);
 
 	useCanvasTap(true, (p) => {
 		if (p.y < PANEL_TOP) return;

@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Rect, Text, useDimensions } from 'react-tela';
 import { SwkbdType } from '@nx.js/constants';
-import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
+import { forceResumeGamepadLoop, useGamepadButton, useDirection, useGamepadEscape } from '../hooks/use-gamepad';
 import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { getVirtualKeyboard, virtualKeyboardError } from '../vk';
 import { InAppKeyboard } from './InAppKeyboard';
 import { BUILD_ID } from '../version';
-import type { Config } from '../config';
+import { KEYBOARD_MODES, type Config, type KeyboardMode } from '../config';
 
 interface Props {
 	/** The config as last saved (pre-filled into the rows). */
@@ -20,15 +20,17 @@ interface Props {
 	onDemo: () => void;
 	/** Cancel the in-flight connection (B, while busy). */
 	onCancel?: () => void;
+	/** Persist a keyboard-mode change (the last row). */
+	onKeyboardChange: (mode: KeyboardMode) => void;
 }
 
 type Field = 'baseUrl' | 'token';
 
-const ROWS = ['Base URL', 'API Token', 'Save & Connect', 'Demo mode (mock data)'] as const;
+const ROWS = ['Base URL', 'API Token', 'Save & Connect', 'Demo mode (mock data)', 'Keyboard'] as const;
 const ROW_W = 920;
-const ROW_H = 68;
-const ROW_GAP = 14;
-const ROW_TOP = 200;
+const ROW_H = 60;
+const ROW_GAP = 12;
+const ROW_TOP = 180;
 
 function mask(v: string): string {
 	if (!v) return '(not set)';
@@ -36,7 +38,7 @@ function mask(v: string): string {
 	return v.slice(0, 10) + '•'.repeat(Math.min(16, v.length - 10));
 }
 
-export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel }: Props) {
+export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel, onKeyboardChange }: Props) {
 	const dims = useDimensions();
 	const [cfg, setCfg] = useState<Config>(initial);
 	const [focus, setFocus] = useState(0);
@@ -52,6 +54,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 
 	/** True once the system keyboard has a non-zero rect (i.e. it is up). */
 	const sysKbdUp = useRef(false);
+	/** State mirror of `sysKbdUp`, for the on-screen indicator only. */
+	const [sysKbd, setSysKbd] = useState(false);
 
 	function startFallback(field: Field, note: string) {
 		kbdGen.current += 1;
@@ -70,6 +74,38 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		if (commit && field) {
 			setCfg((c) => (field === 'baseUrl' ? { ...c, baseUrl: draft } : { ...c, token: draft }));
 		}
+	}
+
+	/**
+	 * Dismiss the system keyboard and take the input back. Only reachable
+	 * while it is up (the loop runs B through the escape path then): on
+	 * emulators the inline keyboard is headless, so without this the player
+	 * could open it and have no way to close it.
+	 */
+	function dismissSystemKbd() {
+		pending.current = null;
+		setDraft('');
+		sysKbdUp.current = false;
+		setSysKbd(false);
+		try {
+			vk?.hide();
+		} catch {
+			/* a hide that fails is still a dismissal for our purposes */
+		}
+		// Some emulators keep a non-zero rect after hide. If the rect never
+		// drops to zero, force the input loop back to normal handling.
+		setTimeout(() => {
+			if ((vk?.boundingRect.height ?? 0) > 0) forceResumeGamepadLoop();
+		}, 400);
+	}
+
+	/** Cycle the Keyboard row: auto → system → built-in. */
+	function cycleKeyboard() {
+		const order = KEYBOARD_MODES;
+		const i = order.indexOf(cfg.keyboard ?? 'builtin');
+		const next = order[(i + 1) % order.length];
+		setCfg((c) => ({ ...c, keyboard: next }));
+		onKeyboardChange(next);
 	}
 
 	/**
@@ -94,6 +130,15 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		kbdGen.current += 1;
 		kbdRef.current = null;
 		setKbd(null);
+
+		// `builtin` skips the system keyboard entirely: on emulators the
+		// inline swkbd is headless (it reports itself up, captures every
+		// key, and never renders), so the built-in keyboard is the only
+		// one the player can actually see and drive.
+		if ((cfg.keyboard ?? 'builtin') === 'builtin') {
+			startFallback(field, 'Built-in keyboard (Keyboard setting)');
+			return;
+		}
 
 		if (vk === null) {
 			const err = virtualKeyboardError();
@@ -138,6 +183,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			setCfg((c) => (field === 'baseUrl' ? { ...c, baseUrl: value } : { ...c, token: value }));
 		};
 		const onGeom = () => {
+			setSysKbd((vk.boundingRect.height ?? 0) > 0);
 			if (vk.boundingRect.height === 0) {
 				commit();
 			} else if (kbdRef.current !== null) {
@@ -155,7 +201,13 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 				sysKbdUp.current = true;
 			}
 		};
-		const onInput = () => setDraft(vk.value);
+		const onInput = () => {
+			// Only while we are actually editing through the system
+			// keyboard: after a B-dismiss the field is ours again, and a
+			// zombie keyboard must not overwrite the draft (a headless
+			// emulator keyboard keeps pushing its buffer forever).
+			if (pending.current !== null) setDraft(vk.value);
+		};
 		vk.addEventListener('submit', commit);
 		vk.addEventListener('cancel', commit);
 		vk.addEventListener('geometrychange', onGeom);
@@ -180,9 +232,10 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			else if (focus === 1) openField('token', true);
 			else if (focus === 2) {
 				if (!busy) onSave(cfg);
-			} else onDemo();
+			} else if (focus === 3) onDemo();
+			else cycleKeyboard();
 		},
-		[focus, cfg, busy, onDemo],
+		[focus, cfg, busy, onDemo, onKeyboardChange],
 		kbd === null,
 	);
 	useGamepadButton(
@@ -206,6 +259,13 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		[busy, onCancel, kbd],
 	);
 
+	// While the SYSTEM keyboard is up the loop ignores the normal buttons
+	// (the keyboard owns the controller); B stays live through the escape
+	// path so a keyboard that never becomes visible can still be dismissed.
+	useGamepadEscape('B', () => {
+		if (pending.current !== null) dismissSystemKbd();
+	}, [vk, pending]);
+
 	// A finger is the primary pointer on the Switch: tapping a row does
 	// exactly what A on that row does (openField / onSave / onDemo each
 	// guard `busy` themselves, so no extra gate is needed here). While the
@@ -222,7 +282,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			else if (i === 1) openField('token', true);
 			else if (i === 2) {
 				if (!busy) onSave(cfg);
-			} else onDemo();
+			} else if (i === 3) onDemo();
+			else cycleKeyboard();
 			return;
 		}
 	});
@@ -232,7 +293,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		if (i === 0) return editing('baseUrl') && draft !== '' ? draft : cfg.baseUrl || '(not set)';
 		if (i === 1) return editing('token') && draft !== '' ? draft : mask(cfg.token);
 		if (i === 2) return busy ? 'connecting… · B to cancel' : 'A to save & open library';
-		return 'A to skip the login and browse mock games';
+		if (i === 3) return 'A to skip the login and browse mock games';
+		return `${cfg.keyboard ?? 'builtin'} — A to change`;
 	};
 
 	const statusError = /fail|cannot|invalid/i.test(status);
@@ -261,7 +323,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			<Text
 				key={`${label}-label`}
 				x={rowX + 24}
-				y={y + 22}
+				y={y + 18}
 				fontSize={26}
 				fill={isFocused ? '#ffffff' : '#9a9ab0'}
 			>
@@ -270,7 +332,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			<Text
 				key={`${label}-value`}
 				x={rowX + 280}
-				y={y + 22}
+				y={y + 18}
 				maxWidth={ROW_W - 310}
 				fontSize={24}
 				fill="#c8c8e0"
@@ -297,14 +359,24 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 
 			{rowEntities}
 
-			{status !== '' && (
+			{status !== '' && !sysKbd && (
 				<Text x={cx} y={560} fontSize={26} fill={statusError ? '#e06060' : '#9a9ab0'} textAlign="center">
 					{status}
 				</Text>
 			)}
 
-			<Text x={cx} y={dims.height - 52} fontSize={22} fill="#6a6a85" textAlign="center">
-				tap a field (or A / ZR) to edit · A on “Save & Connect” to sign in · A on “Demo mode” to skip
+			<Text
+				x={cx}
+				y={dims.height - 52}
+				fontSize={22}
+				fill={sysKbd ? '#e0a060' : '#6a6a85'}
+				textAlign="center"
+			>
+				{sysKbd
+					? 'System keyboard is up (invisible on emulators) — press B to dismiss it'
+					: kbd !== null
+					  ? 'B to close the keyboard'
+					  : 'tap a field (or A / ZR) to edit · A on “Save & Connect” to sign in · A on “Keyboard” to switch keyboards'}
 			</Text>
 
 			{kbd !== null && (

@@ -20,6 +20,22 @@ interface CallbackConfig {
 	repeat: boolean;
 	initialDelay: number;
 	repeatDelay: number;
+}
+
+/**
+ * Repeat timing, owned by the loop and keyed per input (`btn:A`, `stk:Up`,
+ * `esc:B`).
+ *
+ * React re-registers a callback whenever its deps change (a fresh function
+ * identity on every relevant re-render). The repeat state used to live on
+ * the config object, so every re-registration reset `lastTriggerTime` to
+ * zero: "time since last trigger" then looked like it had been forever,
+ * and a still-pressed button auto-repeated on every frame until released.
+ * Holding the timing here (per button, not per callback) means a
+ * re-registration resumes where it left off: a deliberate press is one
+ * action, a held button repeats at the configured cadence.
+ */
+interface RepeatState {
 	lastTriggerTime: number;
 	hasMetRepeatDelay: boolean;
 }
@@ -30,12 +46,23 @@ const defaultRepeatDelay = 100;
 class GamepadLoop {
 	#callbacks = new Map<CallbackConfig, ButtonName>();
 	#stickCallbacks = new Map<CallbackConfig, Direction>();
+	/**
+	 * Callbacks checked only while the system keyboard is up: the keyboard
+	 * owns the controller then, but B stays live as the way out of a
+	 * keyboard that captured input without ever becoming visible (the
+	 * inline swkbd is headless on emulators).
+	 */
+	#escapeCallbacks = new Map<CallbackConfig, ButtonName>();
+	/** Repeat timing, keyed by `btn:<name>` / `stk:<dir>` / `esc:<name>`. */
+	#timing = new Map<string, RepeatState>();
 	/** The pending animation frame, or 0 when the chain is idle. */
 	#frame = 0;
 	/** True while the frame chain is alive. */
 	#running = false;
 	#virtualKeyboard: VirtualKeyboardLike | null = null;
 	#keyboardBound = false;
+	/** True while the system on-screen keyboard reports itself up. */
+	#keyboardUp = false;
 	stickDirection = {
 		Up: false,
 		Down: false,
@@ -48,14 +75,15 @@ class GamepadLoop {
 		// Resolved eagerly, but `#keyboard()` retries while it is missing, so
 		// a keyboard that shows up later is still picked up.
 		this.#keyboard();
+		this.#keyboardUp = (this.#virtualKeyboard?.boundingRect.height ?? 0) > 0;
 	}
 
 	/**
 	 * The on-screen keyboard, if the runtime has one.
 	 *
-	 * The listener is attached once: the keyboard pauses the input loop
-	 * while it covers the screen, because the player is typing then, not
-	 * navigating.
+	 * The listener is attached once: while the keyboard is up the loop
+	 * switches to escape-only mode (the player is typing then, not
+	 * navigating), and resumes normally when it closes.
 	 */
 	#keyboard(): VirtualKeyboardLike | null {
 		if (!this.#virtualKeyboard) {
@@ -95,19 +123,37 @@ class GamepadLoop {
 
 	queueLoop() {
 		if (this.#running) return;
-		const vk = this.#keyboard();
-		// The on-screen keyboard owns the input while it is open.
-		if ((vk?.boundingRect.height ?? 0) > 0) return;
+		if (
+			this.#callbacks.size === 0 &&
+			this.#stickCallbacks.size === 0 &&
+			this.#escapeCallbacks.size === 0
+		) {
+			return;
+		}
 		this.#running = true;
 		this.#schedule();
 	}
 
+	/**
+	 * Take the controller back even if the runtime's keyboard state lags
+	 * behind (some emulators keep a non-zero rect after hide).
+	 */
+	forceResume() {
+		this.#keyboardUp = false;
+		this.buttonState = [];
+		this.queueLoop();
+	}
+
 	#onVirtualKeyboardGeometryChange = () => {
-		if ((this.#keyboard()?.boundingRect.height ?? 0) > 0) {
-			this.#stop();
-		} else {
-			this.queueLoop();
+		const up = (this.#keyboard()?.boundingRect.height ?? 0) > 0;
+		if (up === this.#keyboardUp) return;
+		this.#keyboardUp = up;
+		if (!up) {
+			// Clean slate: button state gathered while the keyboard owned
+			// the input must not produce stale edges on resume.
+			this.buttonState = [];
 		}
+		this.queueLoop();
 	};
 
 	#handleCallback(
@@ -115,34 +161,53 @@ class GamepadLoop {
 		wasPressed: boolean,
 		isPressed: boolean,
 		currentTime: number,
+		key: string,
 	) {
-		const timeSinceLastTrigger = currentTime - config.lastTriggerTime;
+		let t = this.#timing.get(key);
+		if (!t) {
+			t = { lastTriggerTime: 0, hasMetRepeatDelay: false };
+			this.#timing.set(key, t);
+		}
+		const timeSinceLastTrigger = currentTime - t.lastTriggerTime;
 
 		if (!wasPressed && isPressed) {
 			// First press — trigger immediately
 			config.callback();
-			config.hasMetRepeatDelay = false; // reset to wait for initial delay
-			config.lastTriggerTime = currentTime;
+			t.hasMetRepeatDelay = false; // reset to wait for initial delay
+			t.lastTriggerTime = currentTime;
 		} else if (isPressed && config.repeat) {
 			// For repeats, check that we've waited long enough
-			const delay = config.hasMetRepeatDelay
-				? config.repeatDelay
-				: config.initialDelay;
+			const delay = t.hasMetRepeatDelay ? config.repeatDelay : config.initialDelay;
 			if (timeSinceLastTrigger >= delay) {
 				config.callback();
-				config.lastTriggerTime = currentTime;
-				config.hasMetRepeatDelay = true; // mark that we've met initial delay
+				t.lastTriggerTime = currentTime;
+				t.hasMetRepeatDelay = true; // mark that we've met initial delay
 			}
 		} else if (!isPressed) {
-			config.hasMetRepeatDelay = false;
-			config.lastTriggerTime = 0;
+			t.hasMetRepeatDelay = false;
+			t.lastTriggerTime = 0;
 		}
+	}
+
+	/** Track the pressed edge of one button in the shared state. */
+	#trackButton(buttonNum: number, isPressed: boolean): boolean {
+		const wasPressed = this.buttonState[buttonNum] ?? false;
+		if (!wasPressed && isPressed) {
+			this.buttonState[buttonNum] = true;
+		} else if (wasPressed && !isPressed) {
+			this.buttonState[buttonNum] = false;
+		}
+		return wasPressed;
 	}
 
 	loop = () => {
 		this.#frame = 0;
 
-		if (this.#callbacks.size === 0 && this.#stickCallbacks.size === 0) {
+		if (
+			this.#callbacks.size === 0 &&
+			this.#stickCallbacks.size === 0 &&
+			this.#escapeCallbacks.size === 0
+		) {
 			this.#running = false;
 			return;
 		}
@@ -157,31 +222,38 @@ class GamepadLoop {
 		 * comes back on its own.
 		 */
 		if (gp) {
-			// Handle button callbacks
-			for (const [config, button] of this.#callbacks) {
-				const buttonNum = Button[button];
-				const wasPressed = this.buttonState[buttonNum] ?? false;
-				const isPressed = gp.buttons[buttonNum]?.pressed ?? false;
-
-				if (!wasPressed && isPressed) {
-					this.buttonState[buttonNum] = true;
-				} else if (wasPressed && !isPressed) {
-					this.buttonState[buttonNum] = false;
+			if (this.#keyboardUp) {
+				/*
+				 * The system keyboard owns the controller. Everything except
+				 * the escape callbacks is skipped, but the button state is
+				 * kept current so edges are correct when it closes.
+				 */
+				for (const [config, button] of this.#escapeCallbacks) {
+					const buttonNum = Button[button];
+					const isPressed = gp.buttons[buttonNum]?.pressed ?? false;
+					const wasPressed = this.#trackButton(buttonNum, isPressed);
+					if (!wasPressed && isPressed) config.callback();
+				}
+			} else {
+				// Handle button callbacks
+				for (const [config, button] of this.#callbacks) {
+					const buttonNum = Button[button];
+					const isPressed = gp.buttons[buttonNum]?.pressed ?? false;
+					const wasPressed = this.#trackButton(buttonNum, isPressed);
+					this.#handleCallback(config, wasPressed, isPressed, currentTime, `btn:${button}`);
 				}
 
-				this.#handleCallback(config, wasPressed, isPressed, currentTime);
+				const currentStickDirection = this.#getCurrentStickDirection(gp);
+
+				// Handle stick callbacks
+				for (const [config, direction] of this.#stickCallbacks) {
+					const wasPressed = this.stickDirection[direction];
+					const isPressed = currentStickDirection[direction];
+					this.#handleCallback(config, wasPressed, isPressed, currentTime, `stk:${direction}`);
+				}
+
+				this.stickDirection = currentStickDirection;
 			}
-
-			const currentStickDirection = this.#getCurrentStickDirection(gp);
-
-			// Handle stick callbacks
-			for (const [config, direction] of this.#stickCallbacks) {
-				const wasPressed = this.stickDirection[direction];
-				const isPressed = currentStickDirection[direction];
-				this.#handleCallback(config, wasPressed, isPressed, currentTime);
-			}
-
-			this.stickDirection = currentStickDirection;
 		} else {
 			// A controller that goes away must not leave a button stuck
 			// in the "pressed" state, or the next press is not an edge.
@@ -197,6 +269,15 @@ class GamepadLoop {
 		this.#schedule();
 	};
 
+	#makeConfig(
+		cb: () => void,
+		repeat = false,
+		initialDelay = defaultInitialDelay,
+		repeatDelay = defaultRepeatDelay,
+	): CallbackConfig {
+		return { callback: cb, repeat, initialDelay, repeatDelay };
+	}
+
 	add(
 		cb: () => void,
 		button: ButtonName,
@@ -204,15 +285,7 @@ class GamepadLoop {
 		initialDelay = defaultInitialDelay,
 		repeatDelay = defaultRepeatDelay,
 	) {
-		const config: CallbackConfig = {
-			callback: cb,
-			repeat,
-			initialDelay,
-			repeatDelay,
-			lastTriggerTime: 0,
-			hasMetRepeatDelay: false,
-		};
-		this.#callbacks.set(config, button);
+		this.#callbacks.set(this.#makeConfig(cb, repeat, initialDelay, repeatDelay), button);
 		this.queueLoop();
 	}
 
@@ -224,15 +297,17 @@ class GamepadLoop {
 		initialDelay = defaultInitialDelay,
 		repeatDelay = defaultRepeatDelay,
 	) {
-		const config: CallbackConfig = {
-			callback: cb,
-			repeat,
-			initialDelay,
-			repeatDelay,
-			lastTriggerTime: 0,
-			hasMetRepeatDelay: false,
-		};
-		this.#stickCallbacks.set(config, direction);
+		this.#stickCallbacks.set(this.#makeConfig(cb, repeat, initialDelay, repeatDelay), direction);
+		this.queueLoop();
+	}
+
+	/**
+	 * A callback checked only while the system keyboard is up (edge-triggered,
+	 * never repeated). B is registered here by the screen that opens the
+	 * keyboard, so an invisible keyboard can always be dismissed.
+	 */
+	addEscape(cb: () => void, button: ButtonName) {
+		this.#escapeCallbacks.set(this.#makeConfig(cb, false), button);
 		this.queueLoop();
 	}
 
@@ -241,17 +316,43 @@ class GamepadLoop {
 	 *
 	 * Every registration of the callback is removed: the same function can
 	 * be registered for several buttons (or for a button and a direction),
-	 * and a leftover registration would keep firing forever.
+	 * and a leftover registration would keep firing forever. Repeat timing
+	 * for keys that no longer have any registration is dropped.
 	 */
 	delete(cb: () => void) {
-		for (const [config] of this.#callbacks) {
+		for (const [config] of [...this.#callbacks]) {
 			if (config.callback === cb) this.#callbacks.delete(config);
 		}
-		for (const [config] of this.#stickCallbacks) {
+		for (const [config] of [...this.#stickCallbacks]) {
 			if (config.callback === cb) this.#stickCallbacks.delete(config);
 		}
-		if (this.#callbacks.size === 0 && this.#stickCallbacks.size === 0) {
+		for (const [config] of [...this.#escapeCallbacks]) {
+			if (config.callback === cb) this.#escapeCallbacks.delete(config);
+		}
+		this.#pruneTiming();
+		if (
+			this.#callbacks.size === 0 &&
+			this.#stickCallbacks.size === 0 &&
+			this.#escapeCallbacks.size === 0
+		) {
 			this.#stop();
+		}
+	}
+
+	deleteEscape(cb: () => void) {
+		for (const [config] of [...this.#escapeCallbacks]) {
+			if (config.callback === cb) this.#escapeCallbacks.delete(config);
+		}
+		this.#pruneTiming();
+	}
+
+	#pruneTiming() {
+		const alive = new Set<string>();
+		for (const name of this.#callbacks.values()) alive.add(`btn:${name}`);
+		for (const dir of this.#stickCallbacks.values()) alive.add(`stk:${dir}`);
+		for (const name of this.#escapeCallbacks.values()) alive.add(`esc:${name}`);
+		for (const key of [...this.#timing.keys()]) {
+			if (!alive.has(key)) this.#timing.delete(key);
 		}
 	}
 
@@ -297,6 +398,14 @@ class GamepadLoop {
 }
 
 const gamepadLoop = new GamepadLoop();
+
+/**
+ * Force the input loop back to normal handling, even if the runtime's
+ * keyboard rect lags behind a hide (see `GamepadLoop.forceResume`).
+ */
+export function forceResumeGamepadLoop(): void {
+	gamepadLoop.forceResume();
+}
 
 export function useGamepadButton(
 	button: ButtonName,
@@ -372,4 +481,27 @@ export function useDirection(
 			gamepadLoop.delete(cb);
 		};
 	}, [focused, cb, direction, repeat, initialDelay, repeatDelay]);
+}
+
+/**
+ * A button callback that fires only while the system keyboard is up.
+ *
+ * Registered for B by the screen that opens the keyboard: everything else
+ * is owned by the keyboard, but B stays live so a keyboard that captured
+ * input without ever becoming visible (headless on emulators) can still be
+ * dismissed.
+ */
+export function useGamepadEscape(
+	button: ButtonName,
+	callback: () => void,
+	deps: DependencyList = [],
+) {
+	const cb = useCallback(callback, deps);
+
+	useEffect(() => {
+		gamepadLoop.addEscape(cb, button);
+		return () => {
+			gamepadLoop.deleteEscape(cb);
+		};
+	}, [cb, button]);
 }

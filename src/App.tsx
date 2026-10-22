@@ -126,6 +126,13 @@ export function App() {
 		void connect(next);
 	}
 
+	/** Persist a keyboard-mode change (the settings screen's toggle row). */
+	function changeKeyboard(keyboard: Config['keyboard']) {
+		const next = { ...cfg, keyboard };
+		saveConfig(next);
+		setCfg(next);
+	}
+
 	// Skip the login entirely: fill the library with mocked games so the app
 	// can be used (and the next screens developed) without a RomM server.
 	// A walk still running is abandoned so it cannot stomp the mock data.
@@ -167,6 +174,7 @@ export function App() {
 					onSave={saveAndConnect}
 					onDemo={startDemo}
 					onCancel={cancelConnect}
+					onKeyboardChange={changeKeyboard}
 				/>
 				<ActivityBadge />
 			</>
