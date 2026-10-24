@@ -6,7 +6,15 @@ import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { getVirtualKeyboard, virtualKeyboardError } from '../vk';
 import { InAppKeyboard } from './InAppKeyboard';
 import { BUILD_ID } from '../version';
-import { KEYBOARD_MODES, type Config, type KeyboardMode } from '../config';
+import {
+	AUTH_METHODS,
+	DEFAULT_AUTH_METHOD,
+	KEYBOARD_MODES,
+	credentialLabel,
+	type AuthMethod,
+	type Config,
+	type KeyboardMode,
+} from '../config';
 
 interface Props {
 	/** The config as last saved (pre-filled into the rows). */
@@ -24,15 +32,47 @@ interface Props {
 	onKeyboardChange: (mode: KeyboardMode) => void;
 }
 
-type Field = 'baseUrl' | 'token';
+type Field = 'baseUrl' | 'token' | 'username' | 'password' | 'pairingCode';
+
+/** A settings row: an editable text field, or a named action. */
+type Row =
+	| { kind: 'field'; label: string; field: Field }
+	| { kind: 'action'; label: string; action: 'method' | 'save' | 'demo' | 'keyboard' };
 
 // Labels must stay short: the value column starts 280 px in, and a longer
 // label ("Demo mode (mock data)" did) runs straight into the value text.
-const ROWS = ['Base URL', 'API Token', 'Save & Connect', 'Demo mode', 'Keyboard'] as const;
+const METHOD_LABEL: Record<AuthMethod, string> = {
+	token: 'API token',
+	password: 'password grant',
+	pairing: 'pairing code',
+};
+
+/**
+ * Which rows the screen shows. The credential row (and, for the password
+ * grant, a second one) follows the sign-in method — everything else is
+ * constant.
+ */
+function buildRows(method: AuthMethod): Row[] {
+	const credentialField: Field =
+		method === 'password' ? 'username' : method === 'pairing' ? 'pairingCode' : 'token';
+	const passwordRows: Row[] =
+		method === 'password' ? [{ kind: 'field', label: 'Password', field: 'password' }] : [];
+	return [
+		{ kind: 'field', label: 'Base URL', field: 'baseUrl' },
+		{ kind: 'action', label: 'Sign in with', action: 'method' },
+		{ kind: 'field', label: credentialLabel(method), field: credentialField },
+		...passwordRows,
+		{ kind: 'action', label: 'Save & Connect', action: 'save' },
+		{ kind: 'action', label: 'Demo mode', action: 'demo' },
+		{ kind: 'action', label: 'Keyboard', action: 'keyboard' },
+	];
+}
+
+// Up to seven rows (password grant) must clear the status line.
 const ROW_W = 920;
-const ROW_H = 60;
-const ROW_GAP = 12;
-const ROW_TOP = 180;
+const ROW_H = 52;
+const ROW_GAP = 10;
+const ROW_TOP = 172;
 
 function mask(v: string): string {
 	if (!v) return '(not set)';
@@ -40,9 +80,21 @@ function mask(v: string): string {
 	return v.slice(0, 10) + '•'.repeat(Math.min(16, v.length - 10));
 }
 
+/**
+ * Mask a secret that must not be readable at all (the password). Unlike
+ * `mask`, which keeps the `rmm_` prefix of a long token visible, every
+ * character becomes a dot — and the length is clamped so the row never
+ * grows past its neighbours.
+ */
+function maskSecret(v: string): string {
+	return v ? '•'.repeat(Math.min(16, Math.max(4, v.length))) : '(not set)';
+}
+
 export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel, onKeyboardChange }: Props) {
 	const dims = useDimensions();
 	const [cfg, setCfg] = useState<Config>(initial);
+	const method = cfg.authMethod ?? DEFAULT_AUTH_METHOD;
+	const rows = buildRows(method);
 	const [focus, setFocus] = useState(0);
 	const [draft, setDraft] = useState('');
 	const pending = useRef<Field | null>(null);
@@ -59,12 +111,44 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	/** State mirror of `sysKbdUp`, for the on-screen indicator only. */
 	const [sysKbd, setSysKbd] = useState(false);
 
+	/** Current value of an editable field (pre-fill for the keyboards). */
+	function fieldValue(field: Field): string {
+		switch (field) {
+			case 'baseUrl':
+				return cfg.baseUrl;
+			case 'token':
+				return cfg.token;
+			case 'username':
+				return cfg.username ?? '';
+			case 'password':
+				return cfg.password ?? '';
+			case 'pairingCode':
+				return cfg.pairingCode ?? '';
+		}
+	}
+
+	/** The Config patch that stores an edited field. */
+	function patchFor(field: Field, value: string): Partial<Config> {
+		switch (field) {
+			case 'baseUrl':
+				return { baseUrl: value };
+			case 'token':
+				return { token: value };
+			case 'username':
+				return { username: value };
+			case 'password':
+				return { password: value };
+			case 'pairingCode':
+				return { pairingCode: value };
+		}
+	}
+
 	function startFallback(field: Field, note: string) {
 		kbdGen.current += 1;
 		pending.current = null;
 		kbdRef.current = { field, note };
 		setKbd({ field, note });
-		setDraft(field === 'baseUrl' ? cfg.baseUrl : cfg.token);
+		setDraft(fieldValue(field));
 	}
 
 	function closeFallback(commit: boolean) {
@@ -74,7 +158,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		setKbd(null);
 		setDraft('');
 		if (commit && field) {
-			setCfg((c) => (field === 'baseUrl' ? { ...c, baseUrl: draft } : { ...c, token: draft }));
+			setCfg((c) => ({ ...c, ...patchFor(field, draft) }));
 		}
 	}
 
@@ -108,6 +192,29 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		const next = order[(i + 1) % order.length];
 		setCfg((c) => ({ ...c, keyboard: next }));
 		onKeyboardChange(next);
+	}
+
+	/** Cycle the "Sign in with" row: API token → password grant → pairing code. */
+	function cycleMethod() {
+		const order = AUTH_METHODS;
+		const i = order.indexOf(method);
+		const next = order[(i + 1) % order.length];
+		setCfg((c) => ({ ...c, authMethod: next }));
+		// The credential rows below change with the method (the password
+		// grant adds one): keep the focus on a row that still exists.
+		setFocus((f) => Math.min(f, buildRows(next).length - 1));
+	}
+
+	/** Do what A on row `i` does — shared by the A button and a tap. */
+	function activateRow(i: number) {
+		const row = rows[i];
+		if (!row) return;
+		if (row.kind === 'field') openField(row.field, true);
+		else if (row.action === 'method') cycleMethod();
+		else if (row.action === 'save') {
+			if (!busy) onSave(cfg);
+		} else if (row.action === 'demo') onDemo();
+		else cycleKeyboard();
 	}
 
 	/**
@@ -149,9 +256,11 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		}
 
 		pending.current = field;
+		// SwkbdType has no password variant, so the system keyboard cannot
+		// mask — for secrets prefer the built-in Keyboard setting.
 		vk.type = SwkbdType.Normal;
 		vk.okButtonText = 'Done';
-		vk.value = field === 'baseUrl' ? cfg.baseUrl : cfg.token;
+		vk.value = fieldValue(field);
 		setDraft(vk.value);
 		vk.show();
 
@@ -182,7 +291,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			pending.current = null;
 			const value = vk.value;
 			setDraft('');
-			setCfg((c) => (field === 'baseUrl' ? { ...c, baseUrl: value } : { ...c, token: value }));
+			setCfg((c) => ({ ...c, ...patchFor(field, value) }));
 		};
 		const onGeom = () => {
 			setSysKbd((vk.boundingRect.height ?? 0) > 0);
@@ -225,28 +334,26 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	}, [vk]);
 
 	useDirection('Up', () => setFocus((f) => Math.max(0, f - 1)), [], kbd === null);
-	useDirection('Down', () => setFocus((f) => Math.min(ROWS.length - 1, f + 1)), [], kbd === null);
+	useDirection(
+		'Down',
+		() => setFocus((f) => Math.min(rows.length - 1, f + 1)),
+		[rows.length],
+		kbd === null,
+	);
 
 	useGamepadButton(
 		'A',
-		() => {
-			if (focus === 0) openField('baseUrl', true);
-			else if (focus === 1) openField('token', true);
-			else if (focus === 2) {
-				if (!busy) onSave(cfg);
-			} else if (focus === 3) onDemo();
-			else cycleKeyboard();
-		},
-		[focus, cfg, busy, onDemo, onKeyboardChange],
+		() => activateRow(focus),
+		[focus, cfg, busy, onDemo, onSave, onKeyboardChange],
 		kbd === null,
 	);
 	useGamepadButton(
 		'ZR',
 		() => {
-			if (focus === 0) openField('baseUrl', true);
-			else if (focus === 1) openField('token', true);
+			const row = rows[focus];
+			if (row?.kind === 'field') openField(row.field, true);
 		},
-		[focus],
+		[focus, cfg],
 		kbd === null,
 	);
 
@@ -276,26 +383,32 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	const rowX = cx - ROW_W / 2;
 
 	useCanvasTap(kbd === null, ({ x, y }) => {
-		for (let i = 0; i < ROWS.length; i++) {
+		for (let i = 0; i < rows.length; i++) {
 			const ry = ROW_TOP + i * (ROW_H + ROW_GAP);
 			if (x < rowX || x > rowX + ROW_W || y < ry || y > ry + ROW_H) continue;
 			setFocus(i);
-			if (i === 0) openField('baseUrl', true);
-			else if (i === 1) openField('token', true);
-			else if (i === 2) {
-				if (!busy) onSave(cfg);
-			} else if (i === 3) onDemo();
-			else cycleKeyboard();
+			activateRow(i);
 			return;
 		}
 	});
 
 	const editing = (f: Field) => pending.current === f || kbd?.field === f;
-	const rowValue = (i: number): string => {
-		if (i === 0) return editing('baseUrl') && draft !== '' ? draft : cfg.baseUrl || '(not set)';
-		if (i === 1) return editing('token') && draft !== '' ? draft : mask(cfg.token);
-		if (i === 2) return busy ? 'connecting… · B to cancel' : 'A to save & open library';
-		if (i === 3) return 'A to skip the login and browse mock games';
+	const rowValue = (row: Row): string => {
+		if (row.kind === 'field') {
+			// Secrets (the API token, the password) are masked at rest and
+			// shown while being typed — the echo is the only feedback the
+			// built-in keyboard gives.
+			if (editing(row.field) && draft !== '') {
+				return row.field === 'password' ? maskSecret(draft) : draft;
+			}
+			const v = fieldValue(row.field);
+			if (row.field === 'password') return maskSecret(v);
+			if (row.field === 'token') return mask(v);
+			return v || '(not set)';
+		}
+		if (row.action === 'method') return `${METHOD_LABEL[method]} — A to change`;
+		if (row.action === 'save') return busy ? 'connecting… · B to cancel' : 'A to save & open library';
+		if (row.action === 'demo') return 'A to skip the login and browse mock games';
 		return `${cfg.keyboard ?? 'builtin'} — A to change`;
 	};
 
@@ -307,12 +420,12 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	// failure there aborts the whole frame. Absolute positioning keeps every
 	// element on the root canvas, where Rect/Text are known to work.
 	const rowEntities: React.ReactNode[] = [];
-	ROWS.forEach((label, i) => {
+	rows.forEach((row, i) => {
 		const y = ROW_TOP + i * (ROW_H + ROW_GAP);
 		const isFocused = i === focus;
 		rowEntities.push(
 			<Rect
-				key={`${label}-bg`}
+				key={`row-${i}-bg`}
 				x={rowX}
 				y={y}
 				width={ROW_W}
@@ -323,36 +436,39 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 				borderRadius={10}
 			/>,
 			<Text
-				key={`${label}-label`}
+				key={`row-${i}-label`}
 				x={rowX + 24}
-				y={y + 18}
-				fontSize={26}
+				y={y + 14}
+				fontSize={24}
 				fill={isFocused ? '#ffffff' : '#9a9ab0'}
 			>
-				{label}
+				{row.label}
 			</Text>,
 			<Text
-				key={`${label}-value`}
+				key={`row-${i}-value`}
 				x={rowX + 280}
-				y={y + 18}
+				y={y + 15}
 				maxWidth={ROW_W - 310}
-				fontSize={24}
+				fontSize={22}
 				fill="#c8c8e0"
 				overflow="ellipsis"
 			>
-				{rowValue(i)}
+				{rowValue(row)}
 			</Text>,
 		);
 	});
+
+	// Below the last row, but always above the footer hint.
+	const statusY = Math.min(ROW_TOP + rows.length * (ROW_H + ROW_GAP) + 24, dims.height - 130);
 
 	return (
 		<>
 			<Rect width={dims.width} height={dims.height} fill="#101018" />
 
-			<Text x={cx} y={64} fontSize={64} fill="#ffffff" textAlign="center">
+			<Text x={cx} y={52} fontSize={64} fill="#ffffff" textAlign="center">
 				RomMmate
 			</Text>
-			<Text x={cx} y={150} fontSize={28} fill="#9a9ab0" textAlign="center">
+			<Text x={cx} y={130} fontSize={28} fill="#9a9ab0" textAlign="center">
 				RomM settings
 			</Text>
 			<Text x={dims.width - 24} y={34} fontSize={18} fill="#5a5a75" textAlign="right">
@@ -362,7 +478,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			{rowEntities}
 
 			{status !== '' && !sysKbd && (
-				<Text x={cx} y={560} fontSize={26} fill={statusError ? '#e06060' : '#9a9ab0'} textAlign="center">
+				<Text x={cx} y={statusY} fontSize={26} fill={statusError ? '#e06060' : '#9a9ab0'} textAlign="center">
 					{status}
 				</Text>
 			)}
@@ -378,13 +494,14 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 					? 'System keyboard is up (invisible on emulators) — press B to dismiss it'
 					: kbd !== null
 					  ? 'B to close the keyboard'
-					  : 'tap a field (or A / ZR) to edit · A on “Save & Connect” to sign in · A on “Keyboard” to switch keyboards'}
+					  : 'tap a row (or A / ZR) to edit · A on a switcher row to change it · A on “Save & Connect” to sign in'}
 			</Text>
 
 			{kbd !== null && (
 				<InAppKeyboard
 					value={draft}
 					note={kbd.note}
+					mask={kbd.field === 'password'}
 					onChange={setDraft}
 					onSubmit={() => closeFallback(true)}
 					onClose={() => closeFallback(false)}

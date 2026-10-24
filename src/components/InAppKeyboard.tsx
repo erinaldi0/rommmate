@@ -9,6 +9,11 @@ interface Props {
 	value: string;
 	/** One-line explanation of why the system keyboard is not used. */
 	note: string;
+	/**
+	 * Show the echo as dots instead of the characters (passwords). The
+	 * real value still reaches `onChange` — only the display is masked.
+	 */
+	mask?: boolean;
 	onChange: (value: string) => void;
 	/** OK: commit the text and close. */
 	onSubmit: () => void;
@@ -75,7 +80,7 @@ function buildRows(sym: boolean): Key[][] {
  * out over the bottom of the screen — the same place the real keyboard
  * would occupy — driven by gamepad (d-pad/stick + A/B) or touch.
  */
-export function InAppKeyboard({ value, note, onChange, onSubmit, onClose }: Props) {
+export function InAppKeyboard({ value, note, mask, onChange, onSubmit, onClose }: Props) {
 	const dims = useDimensions();
 	const [focus, setFocus] = useState({ r: 0, c: 0 });
 	const [shift, setShift] = useState(false);
@@ -229,7 +234,7 @@ export function InAppKeyboard({ value, note, onChange, onSubmit, onClose }: Prop
 				{note}
 			</Text>
 			<Text x={dims.width - 32} y={PANEL_TOP + 12} fontSize={16} fill={colors.textFaint} textAlign="right">
-				{`B to close · ${value.slice(-24)}`}
+				{`B to close · ${mask ? (value ? '•'.repeat(Math.min(16, value.length)) : '') : value.slice(-24)}`}
 			</Text>
 			{entities}
 		</>

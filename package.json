@@ -15,6 +15,7 @@
     "nro:fat": "npm run build && nxjs-nro --fat && mv rommate.nro rommate-fat.nro",
     "nsp": "npm run build && nxjs-nsp",
     "nsp:fat": "npm run build && nxjs-nsp --fat && mv rommate.nsp rommate-fat.nsp",
+    "nro:nettest": "cd tools/nettest && nxjs-nro --fat",
     "typecheck": "tsc"
   },
   "dependencies": {

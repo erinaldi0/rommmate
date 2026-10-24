@@ -1,0 +1,15 @@
+{
+  "name": "romm-nettest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Nintendo Switch networking debug tool for RomMmate — stages DNS, TCP and HTTP separately",
+  "license": "MIT",
+  "author": "Emanuel Rinaldi",
+  "nacp": {
+    "id": "01ef076150b20001",
+    "title": "RomM NetTest"
+  },
+  "scripts": {
+    "nro": "nxjs-nro --fat"
+  }
+}
