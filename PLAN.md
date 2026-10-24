@@ -323,7 +323,169 @@ Done in v0.8.2:
   appear, it is used as before and the fallback never shows.
 - `?fkbd=1|2` preview harness knobs simulate both failure modes.
 
+Done in v0.10:
+
+- **Three sign-in methods**, cycled by a new "Sign in with" row on the
+  settings screen (`config.ts` grew `authMethod` + per-method fields; the
+  credential rows below follow the method):
+
+  - *API token* — the original flow, a RomM Client API Token typed in
+    directly.
+  - *Password grant* — username + password exchanged via the OAuth2
+    password grant (`POST /api/token`, `auth.ts`). The access token is
+    short-lived, so it is renewed through its refresh token (RomM rotates
+    them) — proactively ~60 s before `tokenExpiresAt`, and transparently
+    when a request 401s mid-walk: `RommClient` retries such a request
+    once via its `onRefresh` callback, and concurrent 401s (the walk fires
+    pages in parallel) share a single, deduplicated refresh. A dead
+    refresh token falls back to the full password grant once.
+  - *Pairing code* — a short code from the web UI's Client API Tokens
+    page, exchanged via `POST /api/client-tokens/exchange` for a client
+    API token. The resolved token is persisted (the code is single-use)
+    and re-exchanged if the server later 401s it.
+- The password masks with dots at rest and in the built-in keyboard's echo
+  (a new `mask` prop on `InAppKeyboard`); the API token keeps its partial
+  mask. `SwkbdType` has no password layout, so the *system* keyboard
+  cannot mask — the built-in Keyboard setting is the private option.
+- Verified end-to-end in the preview against a mock RomM: the password
+  grant → probe → walk sequence, and the 401 → refresh grant → retried
+  request sequence (request logs checked byte for byte). `?auth=
+  password|pairing` seeds the settings screen in either method.
+- **On-device log** (`src/log.ts` → `sdmc:/switch/rommate.log`): the
+  connection flow appends one line per event — method and base URL, each
+  token exchange, the probe, the walk, every failure — never a secret.
+  (The runtime's own diagnostics live in `sdmc:/nxjs-debug.log`; the
+  app's `console` is the on-screen terminal and does not survive a
+  reboot.)
+- **Network pre-flight** (`src/network.ts`): with no active connection
+  the Switch's resolver rejects *every* lookup — even a plain
+  `10.x.x.x` literal — with `Address family for hostname not
+  supported`, before a single packet is sent. The app now reads the
+  IP config from nifm first and refuses up front with "not connected
+  to a network — check Wi-Fi in System Settings". The console's own IP
+  is recorded in the connect log line, and transport errors are mapped
+  to actionable status text (raw-IP rejected → "use a DNS name in Base
+  URL", DNS failed, refused, timed out); the raw error always stays in
+  the log.
+- **Artwork memory fixes** (`src/covers.ts`), after the on-device
+  `RangeError: Out of memory (failed to allocate …)` — a native
+  `malloc` failure (`nx_alloc`) hit while navigating: the SD cache was
+  checked *after* downloading, so every cover was re-pulled in full on
+  every launch; downloads were unbounded (a fast scroll stacked dozens
+  of in-flight file buffers); and the cache kept full-resolution art,
+  whose decoded RGBA copy nx.js's `drawImage` holds per mounted tile
+  (a large scan ≈ tens of MiB each, against a 216×288 draw size).
+  Now: SD hit checked before the network (each artwork is pulled from
+  RomM once, ever — legacy extension-labelled files still honored),
+  a 4-download concurrency cap, and first-fetch downscale to ≤640 px
+  (decode via a `blob:` URL → `OffscreenCanvas` → `convertToBlob`
+  PNG; any failure falls back to caching the original bytes — the
+  decoder sniffs content, so the extension is only a label).
+- **Streaming library load**: the walk is no longer all-or-nothing.
+  `RommClient.getGames` takes an `onPage(batch)` callback that fires per
+  page (first page first, including an empty one) — App switches to the
+  library as soon as the first chunk arrives and appends each later
+  batch, while the header counts up (`Loading library… 400 / 1266`). A
+  mid-walk failure keeps whatever already arrived (the grid stays
+  browsable; the status says "Library incomplete") instead of discarding
+  it. With a stored credential the app now starts *on the library* from
+  the first frame (a spinner + "Connecting to RomM…" where the empty
+  state would mislead), falling back to the settings screen only when
+  the connection dies before the first page. The top-right activity
+  badge shows the walk's completion (`Library 37%` with a small dot
+  spinner, cleared at 100%). `?connect=0` previews the settings screen
+  despite seeded credentials.
+- **Standalone debug NRO** (`tools/nettest/` → `npm run nro:nettest` →
+  `romm-nettest.nro`): plain-JS nx.js app (no build step — edit
+  `romfs/main.js`, repackage) that meters the network stack in 10
+  stages (11 with the opt-in UDP probe): nifm IP config,
+  target-vs-console subnet note, `resolveDns` of the raw-IP target
+  (the bug path — reproduced verbatim under Ryujinx too), `resolveDns`
+  of the server's DNS name (`harinaldibologna.duckdns.org`, the
+  workaround path — names resolve while numeric literals get
+  `Address family…`), `resolveDns(example.com)`, TCP connect by DNS
+  name (the "ping"), TCP connect by raw IP (the contrast), HTTP GET
+  and RomMmate's exact `POST /api/client-tokens/exchange` via the DNS
+  name, plus a WAN check — with `stages ok: N/10` plus hints naming
+  the failing layer (including EAGAIN socket-exhaustion). An 11th
+  stage (raw UDP-socket DNS round-trip to the console's DNS server,
+  separating "TCP refused" from "the whole socket layer is down") is
+  opt-in via `udp=1`: enabled, it hard-crashed the process under
+  Ryujinx's incomplete bsd socket emulation (log stops mid-stage, no
+  JS error — native crash in the uv_poll layer; nx.js's udp.cc
+  registers a second uv_poll_t on the same fd for sendto), so it is
+  off by default and intended for real hardware only. Config via
+  `sdmc:/switch/romm-test.txt` (`host=`/`port=`/`name=`/`url=`/`udp=`);
+  every line also appends to `sdmc:/switch/romm-test.log`. Screen output
+  via the runtime terminal; any button re-runs, + exits. Smoke-tested
+  offline under Node with stubbed `Switch` globals (healthy/offline/
+  numeric/config scenarios all behave; `numeric` reproduces the
+  device's current state — names fine, raw IPs rejected).
+- Fix (found on device): the auth exchanges joined the Base URL without
+  the schemeless-URL normalisation `RommClient` has, so a typed
+  `host:port` made `POST /api/token` resolve *relatively* — against
+  `romfs:` — and nx.js answered `GET method must be used when fetching
+  "romfs:" protocol (got POST)`. The normalisation now lives in one
+  exported `normalizeBaseUrl()` shared by both, and an empty Base URL is
+  refused up front ("Base URL is required") instead of being fetched
+  relative.
+
+Done in v0.11:
+
+- **Library dashboard** (`src/components/LibrarySections.tsx`): the
+  library opens on five horizontal rows in a fixed order — continue
+  playing (by last played), favourites, platforms (one representative
+  cover per platform, with its game count), recently added, collections
+  (the server's saved collections). Empty rows collapse; a row label
+  opens the row's full grid, a cover opens its content. It is the face
+  of the streamed library load from v0.10: rows fill in progressively
+  as pages arrive, and a row that re-sorts mid-stream moves its tiles.
+- **Multi-disc titles**: the client groups the roms of one title
+  (`groupTitles`); a tile shows the release name and a top-left `2/3`
+  disc badge, and A opens a new disc picker (`DiscPicker`, one row per
+  disc, the default disc marked, B closes) before opening content.
+- **react-tela compat layer** (`src/react-tela-compat.ts`): the
+  library's `Root.insertBefore` splices without dispatching an `add`
+  event, so when React re-inserts a tile it moved, an artwork load
+  aborted mid-decode has nothing to restart it — the tile would sit on
+  its placeholder forever. The patch dispatches `add` after the
+  splice, and `CoverImage` re-kicks the load on a post-mount `add`
+  (by then the bytes are local, so it is a cheap re-decode).
+- **Dashboard cover z-order fix** — the last real-data bug: 3 of the
+  29 dashboard covers rendered dark on the real box. Root cause pinned
+  at the op level with the preview probe: on each dark tile, one render
+  pass drew the hairline stroke, then the cover image (the tile lit),
+  then an opaque plate fill — the plate *painting over the loaded
+  artwork*. Mechanism: React moves a re-sorted tile by re-inserting
+  each child with `insertBefore(child, newPredecessor)`, and
+  react-tela's plain splice places every child before that predecessor,
+  so a moved block of siblings lands **fully reversed** in
+  `Root.entities` (array order *is* paint order). The three dark
+  tiles were exactly the three whose entities moved mid-stream; the
+  twenty-six that never moved kept JSX order and stayed lit. The fix
+  is in app code (react-tela stays as-is, no offscreen `<Group>`):
+  the plate is merged into the border rect — one rect drawn *after*
+  the image whose fill is the dark plate only while the artwork is
+  absent (`CoverImage`'s `onStatus`, or no cover at all) and
+  transparent once it lands, with the placeholder glyph unmounting at
+  the same moment. A transparent frame cannot hide the artwork in
+  *either* z-order, so the tile renders correctly whether the block
+  landed in JSX order or reversed. Applied to every rendering with the
+  pattern: the dashboard rows (a small `CoverSlot` per cover), the
+  grid's `CoverTile`, and the detail screen's cover block.
+- **Real-box verification**: preview against the user's live RomM
+  (CORS proxy, stored token) with the 1266-rom library — all 29
+  dashboard covers lit after the fix (pixel-scan probe: 29/29 above
+  the lit threshold; the three reversed tiles included, still lit
+  with the merged rect landing *before* their image in the array),
+  plus the disc badge / picker / detail screen. Fat NRO rebuilt and
+  re-staged.
+
 Still open:
 
 - `WebSocket` live updates (library changes) — the runtime has it.
-- `--fat` build for distribution without the shared runtime.
+- The *API token* sign-in is now validated end-to-end against a real
+  instance (v0.11 real-box run). The password grant and pairing
+  exchange remain written against RomM 5.x's API surface, not yet run
+  against a live server — re-validate them against your instance's
+  `openapi.json` when convenient.

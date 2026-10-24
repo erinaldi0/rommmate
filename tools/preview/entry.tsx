@@ -15,6 +15,9 @@
  *   empty       the library grid with a filter that matches nothing
  *   detail      the detail screen of a single game
  *   spinner     the loading indicator on its own
+ *   sections    the library dashboard (continue playing / favourites /
+ *               platforms / recently added / collections)
+ *   picker      the multi-disc chooser
  *
  * Credentials (query parameters):
  *   seed=1      pre-fills the settings form with a fake instance + token
@@ -22,6 +25,11 @@
  *               which defaults to the fake one) and auto-connects, so the
  *               live app can be pointed at a running RomM — typically the
  *               `proxy.mjs` CORS proxy in front of the real instance
+ *   auth=password|pairing   shows the settings screen in that sign-in
+ *               method, with fake credentials for it
+ *   connect=0   clears all seeded credentials, so the app starts on the
+ *               settings screen (a configured token otherwise sends it
+ *               straight to the library)
  *
  * Input simulation (query parameter `sim`): a comma separated list of
  * button names that are pressed one after another, e.g. `sim=Up,A,B`.
@@ -29,20 +37,28 @@
  * `?delay=<ms>` defers the first press (default 400).
  */
 import './raf-shim';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { render } from 'react-tela/render';
 import { Rect, useDimensions } from 'react-tela';
 import { Button } from '@nx.js/constants';
 import { App } from '../../src/App';
 import { LibraryGrid } from '../../src/components/LibraryGrid';
+import { LibrarySections } from '../../src/components/LibrarySections';
 import { GameDetail } from '../../src/components/GameDetail';
+import { DiscPicker } from '../../src/components/DiscPicker';
 import { Spinner } from '../../src/components/Spinner';
 import { installErrorTrap } from '../../src/errors';
-import { MOCK_GAMES } from '../../src/mock';
+import { patchInsertBefore } from '../../src/react-tela-compat';
+import { coverCacheSize, hasCover, resolveCover } from '../../src/covers';
+import { MOCK_GAMES, MOCK_COLLECTIONS } from '../../src/mock';
 import { colors } from '../../src/theme';
-import type { RommGame } from '../../src/romm';
+import { groupTitles, type RommGame } from '../../src/romm';
 
 installErrorTrap();
+
+// Dev-only diagnostics for the CDP probe (tools/preview/probe.mjs): the
+// covers module's cache state, reachable from the page context.
+(window as unknown as Record<string, unknown>)['__cov'] = { coverCacheSize, hasCover, resolveCover };
 
 // Uncaught errors are swallowed by the error trap, so they are traced here.
 globalThis.addEventListener('error', (event) => {
@@ -62,6 +78,31 @@ if (params.get('seed') === '1') {
 } else {
 	localStorage.removeItem('rommate.baseUrl');
 	localStorage.removeItem('rommate.token');
+	for (const key of [
+		'rommate.authMethod',
+		'rommate.username',
+		'rommate.password',
+		'rommate.refreshToken',
+		'rommate.tokenExpiresAt',
+		'rommate.pairingCode',
+		'rommate.pairingToken',
+	]) {
+		localStorage.removeItem(key);
+	}
+}
+
+// `?auth=password|pairing` picks the sign-in method shown on the settings
+// screen, with plausible fake credentials for it (the token method needs
+// no help — it is the default and `seed=1` fills it in).
+const auth = params.get('auth');
+if (auth === 'password' || auth === 'pairing') {
+	localStorage.setItem('rommate.authMethod', auth);
+	if (auth === 'password') {
+		localStorage.setItem('rommate.username', 'demo');
+		localStorage.setItem('rommate.password', 'hunter2');
+	} else {
+		localStorage.setItem('rommate.pairingCode', 'M2DX-ZWQF');
+	}
 }
 
 // A `base` (and `token`) parameter overrides the seed, so the live app can
@@ -74,6 +115,26 @@ if (base !== null) {
 		'rommate.token',
 		params.get('token') ?? 'rmm_0123456789abcdef0123456789abcdef',
 	);
+}
+
+// `?connect=0` wipes whatever credentials were seeded, so the app starts
+// on the settings screen — the live app goes straight to the library
+// when a token is already configured, which would otherwise skip the
+// settings views below.
+if (params.get('connect') === '0') {
+	localStorage.removeItem('rommate.baseUrl');
+	localStorage.removeItem('rommate.token');
+	for (const key of [
+		'rommate.authMethod',
+		'rommate.username',
+		'rommate.password',
+		'rommate.refreshToken',
+		'rommate.tokenExpiresAt',
+		'rommate.pairingCode',
+		'rommate.pairingToken',
+	]) {
+		localStorage.removeItem(key);
+	}
 }
 
 // Fake virtual keyboard (nx.js provides the real one on-device).
@@ -321,15 +382,82 @@ function SpinnerView() {
 	);
 }
 
+/**
+ * The library dashboard on its own, with the mocked catalogue.
+ *
+ * The rows that the dashboard derives (continue playing, favourites,
+ * platforms, recently added, collections) are all exercised against the
+ * mock's play state, favourite flags and multi-disc releases.
+ */
+function SectionsView() {
+	const titles = useMemo(() => groupTitles(ART_GAMES), []);
+	const favTitles = useMemo(() => groupTitles(ART_GAMES.filter((g) => g.favorite)), []);
+	return (
+		<LibrarySections
+			status={`Demo mode — ${ART_GAMES.length} mock games`}
+			busy={false}
+			demo
+			titles={titles}
+			favoriteTitles={favTitles}
+			collections={MOCK_COLLECTIONS}
+			discSelections={{}}
+			onOpenTitle={(t) => {
+				log.push(`title:${t.name}`);
+				flush();
+			}}
+			onOpenSection={(s) => {
+				log.push(`section:${s.kind}`);
+				flush();
+			}}
+			onBack={() => {}}
+		/>
+	);
+}
+
+/** The disc picker on its own, pointed at the mock's multi-disc release. */
+function PickerView() {
+	const multi = useMemo(
+		() => groupTitles(ART_GAMES).find((t) => t.discs.length > 1),
+		[],
+	);
+	if (multi === undefined) return null;
+	return (
+		<DiscPicker
+			title={multi}
+			initial={0}
+			onPick={(i) => {
+				log.push(`pick:${i}`);
+				flush();
+			}}
+			onClose={() => {}}
+		/>
+	);
+}
+
+// The device entry (src/main.tsx) applies this workaround to its root; the
+// harness must do the same so previews reproduce on-device behaviour.
+const renderApp = (app: React.ReactNode) => {
+	const root = render(app, canvas);
+	patchInsertBefore(root);
+	// Dev-only diagnostics for the CDP probe: the render tree, so a probe
+	// can enumerate the live entities without guessing pixel coordinates.
+	(window as unknown as Record<string, unknown>)['__root'] = root;
+	return root;
+};
+
 if (view === 'demo' || view === 'filter' || view === 'empty') {
 	const empty = view === 'empty';
 	const query = params.get('query') ?? (empty ? 'nothing matches this' : '');
-	render(<PreviewApp initialZone={view === 'filter' ? 'filter' : 'grid'} initialQuery={query} />, canvas);
+	renderApp(<PreviewApp initialZone={view === 'filter' ? 'filter' : 'grid'} initialQuery={query} />);
 } else if (view === 'detail') {
 	const game = ART_GAMES[num('game', 0)] ?? ART_GAMES[0];
-	render(<GameDetail game={game} onBack={() => {}} />, canvas);
+	renderApp(<GameDetail game={game} onBack={() => {}} />);
 } else if (view === 'spinner') {
-	render(<SpinnerView />, canvas);
+	renderApp(<SpinnerView />);
+} else if (view === 'sections') {
+	renderApp(<SectionsView />);
+} else if (view === 'picker') {
+	renderApp(<PickerView />);
 } else {
-	render(<App />, canvas);
+	renderApp(<App />);
 }

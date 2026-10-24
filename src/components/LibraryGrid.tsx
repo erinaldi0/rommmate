@@ -19,7 +19,8 @@ import { FilterBar, type FilterChip } from './FilterBar';
 import { Header } from './Header';
 import { HintBar, HintBarBackdrop } from './HintBar';
 import { EmptyState } from './EmptyState';
-import type { RommGame } from '../romm';
+import { Spinner } from './Spinner';
+import { groupTitles, type RommGame, type RommTitle } from '../romm';
 
 const COLS = 5;
 const COVER_W = 216;
@@ -45,6 +46,16 @@ interface Props {
 	status: string;
 	/** True when the games are mocked rather than fetched from RomM. */
 	demo?: boolean;
+	/** True while the connection (and its background walk) is in flight. */
+	busy?: boolean;
+	/** Header title (the section's name when opened from the dashboard). */
+	title?: string;
+	/** Heading of the loading state (the connect message by default). */
+	busyTitle?: string;
+	/** Per-title disc selection (title key → disc index). */
+	discSelections?: Record<number, number>;
+	/** The focused title has several discs: ask which one to play. */
+	onPickDisc?: (title: RommTitle) => void;
 	onBack: () => void;
 	/** Open the detail screen for a game. */
 	onOpen: (game: RommGame) => void;
@@ -62,10 +73,25 @@ interface Props {
 	initialPlatform?: string;
 }
 
+/** A disc to show for a title: the player's choice, else the main disc. */
+function shownDisc(t: RommTitle, selections: Record<number, number>): RommGame {
+	const i = selections[t.key] ?? t.mainIndex;
+	const clamped = Math.min(Math.max(0, i), t.discs.length - 1);
+	// `discs` is never empty for a grouped title (groupTitles guarantees it).
+	return t.discs[clamped] ?? t.discs[0] as RommGame;
+}
+
+const NO_SELECTIONS: Record<number, number> = {};
+
 export function LibraryGrid({
 	games,
 	status,
 	demo = false,
+	busy = false,
+	title = 'RomMmate',
+	busyTitle = 'Connecting to RomM…',
+	discSelections = NO_SELECTIONS,
+	onPickDisc,
 	onBack,
 	onOpen,
 	paused = false,
@@ -85,29 +111,35 @@ export function LibraryGrid({
 	const [scrollTop, setScrollTop] = useState(initialScroll);
 
 	// ── filtering ──────────────────────────────────────────────────────────
-	// The search matches the game name only: platforms have their own
+	// The search matches the title name only: platforms have their own
 	// chips, and a fuzzy two-axis search would be harder to predict than
 	// it is useful.
 
 	const needle = query.trim().toLowerCase();
 
+	// The grid is browsed per release: every disc of one game groups into a
+	// single title (a multi-disc badge marks them), so the filters work on
+	// titles, not raw roms.
+	const allTitles = useMemo(() => groupTitles(games), [games]);
+
 	const searched = useMemo(
-		() => (needle === '' ? games : games.filter((g) => g.name.toLowerCase().includes(needle))),
-		[games, needle],
+		() =>
+			needle === '' ? allTitles : allTitles.filter((t) => t.name.toLowerCase().includes(needle)),
+		[allTitles, needle],
 	);
 
 	const visible = useMemo(
-		() => (platform === '' ? searched : searched.filter((g) => g.platform === platform)),
+		() => (platform === '' ? searched : searched.filter((t) => t.platform === platform)),
 		[searched, platform],
 	);
 
-	// Platform names, in a stable order, with the counts of the games that
+	// Platform names, in a stable order, with the counts of the titles that
 	// the *search* leaves behind (so the two filters compose).
 	const platformNames = useMemo(() => {
 		const names = new Set<string>();
-		for (const g of games) if (g.platform !== '') names.add(g.platform);
+		for (const t of allTitles) if (t.platform !== '') names.add(t.platform);
 		return Array.from(names).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-	}, [games]);
+	}, [allTitles]);
 
 	const chips: FilterChip[] = useMemo(() => {
 		const out: FilterChip[] = [
@@ -122,7 +154,7 @@ export function LibraryGrid({
 			out.push({
 				key: name,
 				label: name,
-				count: searched.filter((g) => g.platform === name).length,
+				count: searched.filter((t) => t.platform === name).length,
 				active: platform === name,
 			});
 		}
@@ -159,16 +191,19 @@ export function LibraryGrid({
 		const urls: string[] = [];
 		for (let r = first; r <= last; r++) {
 			for (let c = 0; c < COLS; c++) {
-				const url = visible[r * COLS + c]?.coverUrl;
-				if (url !== undefined && url !== '') urls.push(url);
+				const t = visible[r * COLS + c];
+				if (t === undefined) continue;
+				const url = shownDisc(t, discSelections).coverUrl;
+				if (url !== '') urls.push(url);
 			}
 		}
 		const focused = visible[focus];
-		if (focused?.screenshotUrl !== undefined && focused.screenshotUrl !== '') {
-			urls.push(focused.screenshotUrl);
+		if (focused !== undefined) {
+			const url = shownDisc(focused, discSelections).screenshotUrl;
+			if (url !== '') urls.push(url);
 		}
 		prefetchCovers(urls);
-	}, [scrollTop, rows, visible, focus]);
+	}, [scrollTop, rows, visible, focus, discSelections]);
 
 	// Keep the focused tile inside the visible window.
 	useEffect(() => {
@@ -257,6 +292,13 @@ export function LibraryGrid({
 	 * The directions are registered in both zones and decide for themselves
 	 * what they mean: the grid and the filter bar share the same four
 	 * directions, and a direction that is dead in one of them is a trap.
+	 *
+	 * They deliberately have NO auto-repeat: one press is exactly one step
+	 * (one tile / one row). A held button used to repeat 10 times a second
+	 * and blew through the whole library while still held — and the only
+	 * way to land on a single tile was to tap faster than the repeat
+	 * delay. (The keyboard cursor keeps its repeat: there, holding is how
+	 * you type.)
 	 */
 	const gridFocused = !paused && zone === 'grid';
 
@@ -274,7 +316,6 @@ export function LibraryGrid({
 		},
 		[zone, focus, activeChip],
 		!paused,
-		true,
 	);
 
 	useDirection(
@@ -289,7 +330,6 @@ export function LibraryGrid({
 		},
 		[zone, focus, visible.length],
 		!paused,
-		true,
 	);
 
 	useDirection(
@@ -303,7 +343,6 @@ export function LibraryGrid({
 		},
 		[zone, focus],
 		!paused,
-		true,
 	);
 
 	useDirection(
@@ -317,20 +356,26 @@ export function LibraryGrid({
 		},
 		[zone, focus, visible.length, chips.length],
 		!paused,
-		true,
 	);
 
 	useGamepadButton(
 		'A',
 		() => {
 			if (zone === 'grid') {
-				const game = visible[focus];
-				if (game) onOpen(game);
+				const t = visible[focus];
+				if (t === undefined) return;
+				// A multi-disc release chooses its disc before showing the
+				// detail; a single-disc one goes straight to it.
+				if (t.discs.length > 1 && onPickDisc !== undefined) {
+					onPickDisc(t);
+					return;
+				}
+				onOpen(shownDisc(t, discSelections));
 			} else {
 				applyChip(chips[chip]);
 			}
 		},
-		[zone, focus, visible, chips, chip, onOpen, applyChip],
+		[zone, focus, visible, chips, chip, discSelections, onOpen, onPickDisc, applyChip],
 		!paused,
 	);
 
@@ -367,22 +412,31 @@ export function LibraryGrid({
 	const lastRow = Math.min(rows - 1, Math.floor((scrollTop + VIEW_H - 1) / TILE_H));
 
 	const tiles: React.ReactNode[] = [];
-	visible.forEach((g, i) => {
+	visible.forEach((t, i) => {
 		const row = Math.floor(i / COLS);
 		if (row < firstRow || row > lastRow) return;
 
 		const x = gridX + (i % COLS) * (COVER_W + GAP_X);
 		const y = VIEW_Y + row * TILE_H - scrollTop;
 
+		const disc = shownDisc(t, discSelections);
+		const multi = t.discs.length > 1;
+		// The badge mirrors the disc actually on screen (clamped, like
+		// `shownDisc` does).
+		const discIndex = Math.min(Math.max(0, discSelections[t.key] ?? t.mainIndex), t.discs.length - 1) + 1;
+
 		tiles.push(
 			<CoverTile
-				key={g.id || `rom-${i}`}
-				game={g}
+				key={String(t.key)}
+				game={disc}
 				x={x}
 				y={y}
 				width={COVER_W}
 				height={COVER_H}
 				focused={i === focus}
+				nameOverride={t.name}
+				discIndex={multi ? discIndex : undefined}
+				discCount={multi ? t.discs.length : undefined}
 			/>,
 		);
 	});
@@ -412,8 +466,8 @@ export function LibraryGrid({
 	 */
 	const summary =
 		needle === ''
-			? `${visible.length} of ${games.length} games`
-			: `"${query.trim()}" · ${visible.length} of ${games.length}`;
+			? `${visible.length} of ${allTitles.length} games`
+			: `"${query.trim()}" · ${visible.length} of ${allTitles.length}`;
 
 	return (
 		<>
@@ -437,9 +491,9 @@ export function LibraryGrid({
 			{focusRing}
 
 			<Header
-				title="RomMmate"
+				title={title}
 				subtitle={status}
-				meta={`${games.length} games`}
+				meta={`${allTitles.length} games`}
 				badge={demo ? 'DEMO' : ''}
 				build={BUILD_ID}
 			/>
@@ -452,16 +506,33 @@ export function LibraryGrid({
 			/>
 
 			{visible.length === 0 && (
-				<EmptyState
-					glyph="∅"
-					title={games.length === 0 ? 'Your library is empty' : 'No games match'}
-					detail={
-						games.length === 0
-							? 'Once RomM has roms in it, they will show up here.'
-							: 'Try another platform, or clear the search.'
-					}
-					centerY={VIEW_Y + VIEW_H / 2}
-				/>
+				<>
+					{/* While the connection is in flight the "empty" grid is a
+					 * loading state, not an empty library. */}
+					{busy && (
+						<Spinner x={dims.width / 2} y={VIEW_Y + VIEW_H / 2 - 78} active />
+					)}
+					<EmptyState
+						glyph={busy ? '' : '∅'}
+						title={
+							busy
+								? busyTitle
+								: games.length === 0
+									? 'Your library is empty'
+									: 'No games match'
+						}
+						detail={
+							busy
+								? status !== '' && status !== 'Connecting…'
+									? status
+									: 'Loading your library'
+								: games.length === 0
+									? 'Once RomM has roms in it, they will show up here.'
+									: 'Try another platform, or clear the search.'
+						}
+						centerY={VIEW_Y + VIEW_H / 2}
+					/>
+				</>
 			)}
 
 			<HintBarBackdrop />

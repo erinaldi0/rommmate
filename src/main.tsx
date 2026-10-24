@@ -3,6 +3,7 @@ import { render } from 'react-tela/render';
 import { App } from './App';
 import { getFatalMessage, installErrorTrap, reportFatalError } from './errors';
 import { BUILD_ID } from './version';
+import { patchInsertBefore } from './react-tela-compat';
 
 installErrorTrap();
 
@@ -14,7 +15,8 @@ if (ctx) {
 }
 
 try {
-	render(<App />, screen);
+	const root = render(<App />, screen);
+	patchInsertBefore(root);
 } catch (err) {
 	// The very first paint failed and nothing is mounted, so the error has to
 	// be painted straight onto the canvas — otherwise the screen stays blank

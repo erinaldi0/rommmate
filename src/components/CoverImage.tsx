@@ -35,6 +35,32 @@ interface Props {
  */
 export function CoverImage({ url, x, y, width, height, onLoaded, onStatus }: Props) {
 	const [src, setSrc] = useState('');
+	const entityRef = React.useRef<React.ElementRef<typeof Image> | null>(null);
+
+	// The renderer aborts an artwork load the moment its entity leaves the
+	// tree, and nothing restarts it when the same instance is inserted
+	// again: React moves a tile by removing it and re-adding it, and an
+	// unchanged `src` prop starts no new load. A tile that moves while its
+	// artwork is still decoding would therefore sit on its dark plate
+	// forever — which is exactly what happened to covers that arrived
+	// mid-stream while the library was still filling in. An `add` event
+	// after the mount is such a re-insertion, so kick the load again; by
+	// then the bytes are local (a cached blob, an SD file), so the retry
+	// is a cheap re-decode. A layout effect so the listener is attached
+	// synchronously with the commit that mounted the entity — a move in
+	// the very next commit must find it.
+	React.useLayoutEffect(() => {
+		if (src === '') return;
+		const entity = entityRef.current;
+		if (entity === null) return;
+		const onReinsert = () => {
+			void entityRef.current?.loadImage();
+		};
+		entity.addEventListener('add', onReinsert);
+		return () => {
+			entity.removeEventListener('add', onReinsert);
+		};
+	}, [src]);
 
 	React.useEffect(() => {
 		if (url === '') {
@@ -70,6 +96,7 @@ export function CoverImage({ url, x, y, width, height, onLoaded, onStatus }: Pro
 
 	return (
 		<Image
+			ref={entityRef}
 			src={src}
 			x={x}
 			y={y}

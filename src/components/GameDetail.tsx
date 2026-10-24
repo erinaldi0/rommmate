@@ -14,6 +14,8 @@ interface Props {
 	game: RommGame;
 	/** Return to the library. */
 	onBack: () => void;
+	/** The disc's position in its release, when the game has several. */
+	disc?: { index: number; count: number };
 }
 
 const COVER_W = 200;
@@ -43,7 +45,7 @@ function formatBytes(bytes: number): string {
  * Everything is optional — a rom with no description, no genres and no
  * screenshot still renders as a coherent page instead of a half empty one.
  */
-export function GameDetail({ game, onBack }: Props) {
+export function GameDetail({ game, onBack, disc }: Props) {
 	const dims = useDimensions();
 	const { ctx } = useParent();
 
@@ -55,12 +57,15 @@ export function GameDetail({ game, onBack }: Props) {
 		game.coverUrl === '' ? 'ready' : 'loading',
 	);
 	const coverLoading = coverStatus === 'loading';
+	// The plate behind the cover is only needed while the artwork is absent.
+	const placeholderVisible = game.coverUrl === '' || coverStatus !== 'ready';
 
 	const name = game.name || `Game #${game.id}`;
 	const title = truncate(ctx, name, dims.width - 320, fontSize.display);
 	const colW = dims.width - COL_X - space.xl;
 
 	const rows: Array<[string, string]> = [];
+	if (disc !== undefined && disc.count > 1) rows.push(['Disc', `${disc.index + 1} of ${disc.count}`]);
 	if (game.platform !== '') rows.push(['Platform', game.platform]);
 	if (game.releaseDate !== '') rows.push(['Released', game.releaseDate]);
 	if (game.genres.length > 0) rows.push(['Genres', game.genres.join(', ')]);
@@ -84,25 +89,12 @@ export function GameDetail({ game, onBack }: Props) {
 				build={BUILD_ID}
 			/>
 
-			{/* Cover art (or its placeholder). */}
-			<Rect
-				x={LEFT_X}
-				y={COVER_Y}
-				width={COVER_W}
-				height={COVER_H}
-				fill={colors.coverBg}
-				borderRadius={radius.md}
-			/>
-			<Text
-				x={LEFT_X + COVER_W / 2}
-				y={COVER_Y + COVER_H / 2 - 40}
-				fontFamily={fontFamily}
-				fontSize={56}
-				fill={colors.coverGlyph}
-				textAlign="center"
-			>
-				{name.trim().charAt(0).toUpperCase() || '?'}
-			</Text>
+			{/*
+			 * Cover art (or its placeholder). The plate+frame rect is drawn
+			 * after the artwork and fills only while the placeholder shows,
+			 * so a re-inserted block can never paint over the cover (see
+			 * CoverTile for why).
+			 */}
 			<CoverImage
 				url={game.coverUrl}
 				x={LEFT_X}
@@ -116,10 +108,23 @@ export function GameDetail({ game, onBack }: Props) {
 				y={COVER_Y}
 				width={COVER_W}
 				height={COVER_H}
+				fill={placeholderVisible ? colors.coverBg : undefined}
 				stroke={colors.border}
 				lineWidth={1}
 				borderRadius={radius.md}
 			/>
+			{placeholderVisible && (
+				<Text
+					x={LEFT_X + COVER_W / 2}
+					y={COVER_Y + COVER_H / 2 - 40}
+					fontFamily={fontFamily}
+					fontSize={56}
+					fill={colors.coverGlyph}
+					textAlign="center"
+				>
+					{name.trim().charAt(0).toUpperCase() || '?'}
+				</Text>
+			)}
 
 			{/* While the artwork is on its way, the box says so. */}
 			{coverLoading && (

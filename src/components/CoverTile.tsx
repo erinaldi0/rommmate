@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Rect, Text, useParent } from 'react-tela';
 import { colors, fontFamily, fontSize, radius } from '../theme';
-import { wrapLines } from '../text';
-import { CoverImage } from './CoverImage';
+import { measure, wrapLines } from '../text';
+import { CoverImage, type CoverStatus } from './CoverImage';
 import type { RommGame } from '../romm';
 
 interface Props {
@@ -16,6 +16,15 @@ interface Props {
 	height: number;
 	/** True when this tile owns the focus ring. */
 	focused: boolean;
+	/**
+	 * Name to print under the cover, overriding `game.name`. Multi-disc
+	 * titles show the release name, not the name of the disc on screen.
+	 */
+	nameOverride?: string;
+	/** 1-based position of the disc the tile is showing, for multi-disc games. */
+	discIndex?: number;
+	/** How many discs the game has; the badge only appears above 1. */
+	discCount?: number;
 }
 
 /** Height of one title line. */
@@ -32,58 +41,117 @@ export const TITLE_BLOCK_H = TITLE_LINE_H * 2 + PLATFORM_LINE_H;
  * offscreen `<Group>` of react-tela is deliberately avoided, because a
  * failure inside it aborts the whole frame.
  */
-export function CoverTile({ game, x, y, width, height, focused }: Props) {
+export function CoverTile({
+	game,
+	x,
+	y,
+	width,
+	height,
+	focused,
+	nameOverride = '',
+	discIndex,
+	discCount,
+}: Props) {
 	const { ctx } = useParent();
 
-	const name = game.name || `Game #${game.id}`;
+	const name = nameOverride !== '' ? nameOverride : game.name || `Game #${game.id}`;
 	const titleLines = wrapLines(ctx, name, width - 8, 2, fontSize.label);
+
+	// The plate and the glyph are only needed while the artwork is absent.
+	// CoverImage reports its lifecycle so the two can step aside; a cover
+	// that never existed keeps them for good.
+	const [coverStatus, setCoverStatus] = useState<CoverStatus>(
+		game.coverUrl === '' ? 'ready' : 'loading',
+	);
+	// A tile that is reused for a different game resets its placeholder
+	// state with the url (CoverImage reports the same, this just avoids a
+	// stale frame in between).
+	React.useEffect(() => {
+		setCoverStatus(game.coverUrl === '' ? 'ready' : 'loading');
+	}, [game.coverUrl]);
+	const placeholderVisible = game.coverUrl === '' || coverStatus !== 'ready';
+
+	// A multi-disc release wears a small badge over the corner of the cover:
+	// which disc is on screen, of how many there are.
+	const multi = discCount !== undefined && discCount > 1 && discIndex !== undefined;
+	const badgeText = multi ? `${discIndex}/${discCount}` : '';
+	const badgeW = badgeText === '' ? 0 : measure(ctx, badgeText, 13) + 12;
 
 	return (
 		<>
-			{/* Cover backing plate — also the placeholder background. */}
-			<Rect
-				x={x}
-				y={y}
-				width={width}
-				height={height}
-				fill={colors.coverBg}
-				borderRadius={radius.md}
-			/>
-
-			{/*
-			 * Placeholder glyph. It sits *under* the artwork, so a cover
-			 * that arrives later simply covers it — no layout change, no
-			 * second render pass.
-			 */}
-			<Text
-				x={x + width / 2}
-				y={y + height / 2 - 42}
-				fontFamily={fontFamily}
-				fontSize={64}
-				fill={colors.coverGlyph}
-				textAlign="center"
-			>
-				{name.trim().charAt(0).toUpperCase() || '?'}
-			</Text>
-
 			<CoverImage
 				url={game.coverUrl}
 				x={x}
 				y={y}
 				width={width}
 				height={height}
+				onStatus={setCoverStatus}
 			/>
 
-			{/* Hairline on top of the artwork to keep the corners tidy. */}
+			{/*
+			 * Backing plate and hairline in one rect, drawn *after* the
+			 * artwork. react-tela's insertBefore splices a re-inserted
+			 * tile's children back in reversed order when the grid re-sorts,
+			 * so a plate that sits beneath the image in the JSX ends up
+			 * painted *over* it — a tile with its cover fully loaded renders
+			 * dark. The plate therefore turns transparent the moment the
+			 * artwork lands: a transparent frame is harmless whichever way
+			 * the block landed, and it is the opaque placeholder while the
+			 * cover is still missing.
+			 */}
 			<Rect
 				x={x}
 				y={y}
 				width={width}
 				height={height}
+				fill={placeholderVisible ? colors.coverBg : undefined}
 				stroke={colors.border}
 				lineWidth={1}
 				borderRadius={radius.md}
 			/>
+
+			{/*
+			 * Placeholder glyph, above the plate. It exists only while the
+			 * placeholder does: a cover that arrives unmounts it, so it can
+			 * never sit on top of the artwork whichever order the tile
+			 * landed in.
+			 */}
+			{placeholderVisible && (
+				<Text
+					x={x + width / 2}
+					y={y + height / 2 - 42}
+					fontFamily={fontFamily}
+					fontSize={64}
+					fill={colors.coverGlyph}
+					textAlign="center"
+				>
+					{name.trim().charAt(0).toUpperCase() || '?'}
+				</Text>
+			)}
+
+			{multi && (
+				<>
+					<Rect
+						x={x + 8}
+						y={y + 8}
+						width={badgeW}
+						height={20}
+						fill={colors.accent}
+						borderRadius={radius.sm}
+					/>
+					<Text
+						x={x + 8 + badgeW / 2}
+						y={y + 12}
+						fontFamily={fontFamily}
+						fontSize={13}
+						fontWeight="bold"
+						fill={colors.bg}
+						textAlign="center"
+					>
+						{badgeText}
+					</Text>
+				</>
+			)}
 
 			{titleLines.map((line, i) => (
 				<Text

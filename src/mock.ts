@@ -6,7 +6,7 @@
  * server or valid credentials. The shape matches `RommGame` exactly, so
  * the library screen cannot tell the difference.
  */
-import type { RommGame } from './romm';
+import type { RommCollection, RommGame, RommSibling } from './romm';
 
 interface MockEntry {
 	name: string;
@@ -509,18 +509,101 @@ const ENTRIES: MockEntry[] = [
 	},
 ];
 
+/** One disc of a release, for the mock's multi-disc games. */
+function sib(id: number, sort: string, fsName: string, name: string, isMain: boolean): RommSibling {
+	return { id, sort, fsName, name, isMain };
+}
+
+/** An ISO timestamp `ms` milliseconds ago. */
+function ago(ms: number): string {
+	return new Date(Date.now() - ms).toISOString();
+}
+
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+
 /**
  * The mock library. `coverUrl` is empty on purpose: remote artwork would
- * need a live RomM server, and the grid draws a placeholder tile instead.
+ * need a live RomM server, and the tiles draw a placeholder instead.
+ *
+ * The library also carries the richer state the dashboard browses by:
+ * play times (every 9th game a few hours ago, every 13th a few days ago),
+ * favourites (every 7th), staggered addition dates, and two multi-disc
+ * releases (the two Chrono Trigger copies, and Final Fantasy VI + disc 2).
  */
-export const MOCK_GAMES: RommGame[] = ENTRIES.map((entry, i) => ({
-	id: i + 1,
-	name: entry.name,
-	platform: entry.platform,
-	coverUrl: '',
-	screenshotUrl: '',
-	summary: entry.summary,
-	releaseDate: entry.releaseDate,
-	genres: entry.genres,
-	sizeBytes: entry.sizeBytes,
-}));
+export const MOCK_GAMES: RommGame[] = ENTRIES.map((entry, i) => {
+	const id = i + 1;
+	const fsName = `${entry.name}.zip`;
+	return {
+		id,
+		name: entry.name,
+		platform: entry.platform,
+		coverUrl: '',
+		screenshotUrl: '',
+		summary: entry.summary,
+		releaseDate: entry.releaseDate,
+		genres: entry.genres,
+		sizeBytes: entry.sizeBytes,
+		gameKey: id,
+		siblings: [sib(id, '', fsName, entry.name, true)],
+		isMain: true,
+		fsName,
+		lastPlayedAt: id % 9 === 0 ? ago((id % 5 + 1) * HOUR) : id % 13 === 0 ? ago((id % 7 + 1) * DAY) : '',
+		createdAt: ago(id * DAY),
+		favorite: id % 7 === 0,
+	};
+});
+
+// ── multi-disc releases ────────────────────────────────────────────────────
+
+// The two Chrono Trigger copies are one release with two discs.
+const chronos = MOCK_GAMES.filter((g) => g.name === 'Chrono Trigger');
+const chronoA = chronos[0];
+const chronoB = chronos[1];
+if (chronoA !== undefined && chronoB !== undefined) {
+	const group = [
+		sib(chronoA.id, 'Disc 1', chronoA.fsName, 'Chrono Trigger', true),
+		sib(chronoB.id, 'Disc 2', chronoB.fsName, 'Chrono Trigger', false),
+	];
+	chronoA.gameKey = Math.min(chronoA.id, chronoB.id);
+	chronoA.siblings = group;
+	chronoB.gameKey = chronoA.gameKey;
+	chronoB.siblings = group;
+}
+
+// Final Fantasy VI gets a second disc.
+const ffvi = MOCK_GAMES.find((g) => g.name === 'Final Fantasy VI');
+if (ffvi !== undefined) {
+	const disc2Id = ENTRIES.length + 1;
+	const disc2: RommGame = {
+		id: disc2Id,
+		name: ffvi.name,
+		platform: ffvi.platform,
+		coverUrl: '',
+		screenshotUrl: '',
+		summary: ffvi.summary,
+		releaseDate: ffvi.releaseDate,
+		genres: ffvi.genres,
+		sizeBytes: ffvi.sizeBytes,
+		gameKey: ffvi.id,
+		siblings: [
+			sib(ffvi.id, 'Disc 1', `${ffvi.name} (Disc 1).zip`, ffvi.name, true),
+			sib(disc2Id, 'Disc 2', `${ffvi.name} (Disc 2).zip`, ffvi.name, false),
+		],
+		isMain: false,
+		fsName: `${ffvi.name} (Disc 2).zip`,
+		lastPlayedAt: '',
+		createdAt: ago(disc2Id * DAY),
+		favorite: false,
+	};
+	ffvi.fsName = `${ffvi.name} (Disc 1).zip`;
+	ffvi.siblings = disc2.siblings;
+	MOCK_GAMES.push(disc2);
+}
+
+/** Mock saved collections for the dashboard's last row. */
+export const MOCK_COLLECTIONS: RommCollection[] = [
+	{ id: 1, name: 'Night games', romCount: 12, coverUrl: '', kind: 'user' },
+	{ id: 2, name: 'RPGs', romCount: 34, coverUrl: '', kind: 'user' },
+	{ id: 3, name: 'Recently played', romCount: 8, coverUrl: '', kind: 'smart' },
+];
