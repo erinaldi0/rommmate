@@ -21,6 +21,7 @@ import { colors, fontFamily, fontSize, radius } from '../theme';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
 import { useDragScroll } from '../hooks/use-drag-scroll';
 import { BUILD_ID } from '../version';
+import { measure } from '../text';
 import { relativeTime, formatDate } from '../time';
 import { Header } from './Header';
 import { HintBar, HintBarBackdrop } from './HintBar';
@@ -58,32 +59,24 @@ interface Props {
 
 /** Where the rows live. */
 const AREA_Y = 108;
-/** How tall one row is: cover + two text lines + breathing room. */
-const ROW_H = 196;
+/** How tall one row is: header + cover + two text lines. */
+const ROW_H = 224;
 /** The rows' viewport — the hint bar owns the bottom of the screen. */
 const AREA_H = 560;
-/** Row label column (wide enough for "Continue playing" at heading size). */
-const LABEL_X = 24;
-const LABEL_W = 190;
+/** Left margin: the header and the covers share it (the RomM web layout). */
+const MARGIN_X = 24;
 /** First cover of a row. */
-const TILE_X0 = LABEL_X + LABEL_W + 10;
+const TILE_X0 = MARGIN_X;
 const COVER_W = 108;
 const COVER_H = 144; // 3:4 cover art
 /**
- * Horizontal tile pitch. Seven covers per row — the same count the RomM
- * web UI shows — so the artwork keeps its share of the screen instead of
- * the row being crammed with tiny thumbnails.
+ * Horizontal tile pitch. Nine covers per row from the left margin — the
+ * same scale the RomM web UI uses for its home rows, with the section
+ * header above instead of a label column beside.
  */
 const PITCH_X = 128;
-/**
- * Platform rows use the wider geometry: platform names are the point of
- * that row, and a narrow label ellipsises "Nintendo 64" unceremoniously.
- */
-const WIDE_PITCH_X = 132;
-const WIDE_COVER_W = 112;
-const WIDE_COVER_H = 149;
 /** How many covers one row shows; the rest live in the row's grid. */
-const MAX_TILES = 7;
+const MAX_TILES = 9;
 
 interface Tile {
 	key: string;
@@ -102,15 +95,13 @@ interface Tile {
 
 interface Row {
 	id: string;
-	/** Label in the left column. */
+	/** The header above the row. */
 	label: string;
-	/** Small line under the label. */
+	/** The small count after the header. */
 	countLabel: string;
-	/** What A on the label opens. */
+	/** What A on the header opens. */
 	section: LibrarySection;
 	tiles: Tile[];
-	/** Drawn with the wider tile geometry (platform names). */
-	wide?: boolean;
 }
 
 /**
@@ -246,8 +237,7 @@ export function LibrarySections({
 				id: 'platforms',
 				label: 'Platforms',
 				countLabel: `${platforms.length} ${platforms.length === 1 ? 'platform' : 'platforms'}`,
-				section: { kind: 'recent' }, // labels never open this one; covers do
-				wide: true,
+				section: { kind: 'recent' }, // headers never open this one; covers do
 				tiles: platforms.slice(0, MAX_TILES).map(([name, info]) => ({
 					key: `platform-${name}`,
 					coverUrl: info.cover,
@@ -401,24 +391,26 @@ export function LibrarySections({
 		const rowY = AREA_Y + i * ROW_H - scrollTop;
 		const rowFocused = i === focusRow && !paused;
 
-		// The label.
+		// The header: the row's name and its count, above the covers —
+		// the RomM web UI's section header. It is the row's focus target:
+		// left from the first cover lands on it, and A opens the row.
+		const labelW = measure(ctx, r.label, fontSize.body);
+		const countW = measure(ctx, r.countLabel, fontSize.tiny);
 		rowTiles.push(
 			<Text
 				key={`${r.id}-label`}
-				x={LABEL_X}
-				y={rowY + 56}
+				x={MARGIN_X}
+				y={rowY + 18}
 				fontFamily={fontFamily}
-				fontSize={fontSize.heading}
-				fill={rowFocused ? colors.textPrimary : colors.textSecondary}
-				maxWidth={LABEL_W}
-				overflow="ellipsis"
+				fontSize={fontSize.body}
+				fill={rowFocused && focusSel < 0 ? colors.textPrimary : colors.textSecondary}
 			>
 				{r.label}
 			</Text>,
 			<Text
 				key={`${r.id}-count`}
-				x={LABEL_X}
-				y={rowY + 84}
+				x={MARGIN_X + labelW + 10}
+				y={rowY + 18}
 				fontFamily={fontFamily}
 				fontSize={fontSize.tiny}
 				fill={colors.textFaint}
@@ -428,24 +420,22 @@ export function LibrarySections({
 		);
 
 		// The covers.
-		const coverW = r.wide ? WIDE_COVER_W : COVER_W;
-		const coverH = r.wide ? WIDE_COVER_H : COVER_H;
-		const pitch = r.wide ? WIDE_PITCH_X : PITCH_X;
-		const nameSize = r.wide ? 14 : 15;
-		const nameW = pitch - 8;
+		const coverTop = rowY + 30;
+		const nameSize = 15;
+		const nameW = PITCH_X - 8;
 
 		r.tiles.forEach((t, ti) => {
-			const x = TILE_X0 + ti * pitch;
+			const x = TILE_X0 + ti * PITCH_X;
 			const covered = t.coverUrl !== '' ? '' : (t.name.trim().charAt(0).toUpperCase() || '?');
 			rowTiles.push(
 				<React.Fragment key={`${r.id}-${t.key}`}>
-					<CoverSlot url={t.coverUrl} glyph={covered} x={x} y={rowY + 2} width={coverW} height={coverH} />
+					<CoverSlot url={t.coverUrl} glyph={covered} x={x} y={coverTop} width={COVER_W} height={COVER_H} />
 
 					{/* Multi-disc badge over the corner of the cover. */}
 					{t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined && (
 						<Rect
 							x={x + 6}
-							y={rowY + 8}
+							y={coverTop + 8}
 							width={36}
 							height={20}
 							fill={colors.accent}
@@ -453,14 +443,14 @@ export function LibrarySections({
 						/>
 					)}
 					{t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined && (
-						<Text x={x + 6 + 18} y={rowY + 10} fontFamily={fontFamily} fontSize={13} fontWeight="bold" fill={colors.bg} textAlign="center">
+						<Text x={x + 6 + 18} y={coverTop + 10} fontFamily={fontFamily} fontSize={13} fontWeight="bold" fill={colors.bg} textAlign="center">
 							{`${t.discIndex}/${t.discCount}`}
 						</Text>
 					)}
 
 					<Text
 						x={x}
-						y={rowY + 152}
+						y={coverTop + COVER_H + 23}
 						fontFamily={fontFamily}
 						fontSize={nameSize}
 						fill={rowFocused && ti === focusSel ? colors.textPrimary : colors.textSecondary}
@@ -472,7 +462,7 @@ export function LibrarySections({
 					{t.sub !== '' && (
 						<Text
 							x={x}
-							y={rowY + 174}
+							y={coverTop + COVER_H + 43}
 							fontFamily={fontFamily}
 							fontSize={12}
 							fill={colors.textFaint}
@@ -486,17 +476,17 @@ export function LibrarySections({
 			);
 		});
 
-		// The focus ring: exactly one, around the label or the focused cover.
+		// The focus ring: exactly one, around the header or the focused cover.
 		if (rowFocused && focusSel < 0) {
 			focusRing.push(
 				<Rect
 					key={`ring-${r.id}-label`}
-					x={LABEL_X - 6}
-					y={rowY + 16}
-					width={LABEL_W + 12}
-					height={ROW_H - 32}
+					x={MARGIN_X - 8}
+					y={rowY - 6}
+					width={labelW + countW + 34}
+					height={34}
 					stroke={colors.accent}
-					lineWidth={4}
+					lineWidth={3}
 					borderRadius={radius.lg}
 				/>,
 			);
@@ -506,10 +496,10 @@ export function LibrarySections({
 				focusRing.push(
 					<Rect
 						key={`ring-${r.id}-${t.key}`}
-						x={TILE_X0 + focusSel * pitch - 6}
-						y={rowY - 6}
-						width={coverW + 12}
-						height={coverH + 12}
+						x={TILE_X0 + focusSel * PITCH_X - 6}
+						y={coverTop - 6}
+						width={COVER_W + 12}
+						height={COVER_H + 12}
 						stroke={colors.accent}
 						lineWidth={4}
 						borderRadius={radius.lg}
