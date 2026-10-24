@@ -15,10 +15,11 @@
  * While the library is still streaming in, the rows fill in progressively
  * as pages arrive — the dashboard is the streamed library's face.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Rect, Text, useDimensions, useParent } from 'react-tela';
 import { colors, fontFamily, fontSize, radius } from '../theme';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
+import { useDragScroll } from '../hooks/use-drag-scroll';
 import { BUILD_ID } from '../version';
 import { relativeTime, formatDate } from '../time';
 import { Header } from './Header';
@@ -57,25 +58,32 @@ interface Props {
 
 /** Where the rows live. */
 const AREA_Y = 108;
-const ROW_H = 106;
+/** How tall one row is: cover + two text lines + breathing room. */
+const ROW_H = 196;
+/** The rows' viewport — the hint bar owns the bottom of the screen. */
+const AREA_H = 560;
 /** Row label column (wide enough for "Continue playing" at heading size). */
 const LABEL_X = 24;
 const LABEL_W = 190;
 /** First cover of a row. */
 const TILE_X0 = LABEL_X + LABEL_W + 10;
-const COVER_W = 60;
-const COVER_H = 80;
-/** Horizontal tile pitch. */
-const PITCH_X = 82;
+const COVER_W = 108;
+const COVER_H = 144; // 3:4 cover art
+/**
+ * Horizontal tile pitch. Seven covers per row — the same count the RomM
+ * web UI shows — so the artwork keeps its share of the screen instead of
+ * the row being crammed with tiny thumbnails.
+ */
+const PITCH_X = 128;
 /**
  * Platform rows use the wider geometry: platform names are the point of
- * that row, and a 60 px label ellipsises "Nintendo 64" unceremoniously.
+ * that row, and a narrow label ellipsises "Nintendo 64" unceremoniously.
  */
-const WIDE_PITCH_X = 96;
-const WIDE_COVER_W = 64;
-const WIDE_COVER_H = 85;
+const WIDE_PITCH_X = 132;
+const WIDE_COVER_W = 112;
+const WIDE_COVER_H = 149;
 /** How many covers one row shows; the rest live in the row's grid. */
-const MAX_TILES = 10;
+const MAX_TILES = 7;
 
 interface Tile {
 	key: string;
@@ -154,9 +162,9 @@ function CoverSlot({
 			{glyph !== '' && placeholderVisible && (
 				<Text
 					x={x + width / 2}
-					y={y + height / 2 - 20}
+					y={y + height / 2 - 36}
 					fontFamily={fontFamily}
-					fontSize={32}
+					fontSize={56}
 					fill={colors.coverGlyph}
 					textAlign="center"
 				>
@@ -345,6 +353,36 @@ export function LibrarySections({
 	);
 	useGamepadButton('B', onBack, [onBack], !paused);
 
+	// ── scrolling ─────────────────────────────────────────────────────────
+
+	// At this cover size five rows don't fit the viewport, so the rows
+	// scroll: the view follows the focused row, and a touch drag pans it.
+	const [scrollTop, setScrollTop] = useState(0);
+	const maxScroll = Math.max(0, rows.length * ROW_H - AREA_H);
+
+	useEffect(() => {
+		setScrollTop((s) => Math.max(0, Math.min(s, maxScroll)));
+	}, [maxScroll]);
+
+	// Keep the focused row inside the visible window (the same rule the
+	// library grid applies to its focused tile).
+	useEffect(() => {
+		setScrollTop((s) => {
+			const top = focusRow * ROW_H;
+			const bottom = top + ROW_H;
+			if (top < s) return Math.max(0, top);
+			if (bottom > s + AREA_H) return Math.min(maxScroll, bottom - AREA_H);
+			return s;
+		});
+	}, [focusRow, rows.length, maxScroll]);
+
+	useDragScroll(
+		!paused && rows.length > 0,
+		(dy) => {
+			setScrollTop((s) => Math.max(0, Math.min(s + dy, maxScroll)));
+		},
+	);
+
 	// ── rendering ─────────────────────────────────────────────────────────
 
 	const meta = `${titles.length} games`;
@@ -353,8 +391,14 @@ export function LibrarySections({
 	const rowTiles: React.ReactNode[] = [];
 	const focusRing: React.ReactNode[] = [];
 
+	// Only the rows that intersect the viewport are emitted (the grid's
+	// culling rule, applied to section rows).
+	const firstRow = Math.max(0, Math.floor(scrollTop / ROW_H));
+	const lastRow = Math.min(rows.length - 1, Math.floor((scrollTop + AREA_H - 1) / ROW_H));
+
 	rows.forEach((r, i) => {
-		const rowY = AREA_Y + i * ROW_H;
+		if (i < firstRow || i > lastRow) return;
+		const rowY = AREA_Y + i * ROW_H - scrollTop;
 		const rowFocused = i === focusRow && !paused;
 
 		// The label.
@@ -362,7 +406,7 @@ export function LibrarySections({
 			<Text
 				key={`${r.id}-label`}
 				x={LABEL_X}
-				y={rowY + 30}
+				y={rowY + 56}
 				fontFamily={fontFamily}
 				fontSize={fontSize.heading}
 				fill={rowFocused ? colors.textPrimary : colors.textSecondary}
@@ -374,7 +418,7 @@ export function LibrarySections({
 			<Text
 				key={`${r.id}-count`}
 				x={LABEL_X}
-				y={rowY + 60}
+				y={rowY + 84}
 				fontFamily={fontFamily}
 				fontSize={fontSize.tiny}
 				fill={colors.textFaint}
@@ -387,8 +431,8 @@ export function LibrarySections({
 		const coverW = r.wide ? WIDE_COVER_W : COVER_W;
 		const coverH = r.wide ? WIDE_COVER_H : COVER_H;
 		const pitch = r.wide ? WIDE_PITCH_X : PITCH_X;
-		const nameSize = r.wide ? 12 : 13;
-		const nameW = r.wide ? WIDE_PITCH_X - 6 : PITCH_X - 8;
+		const nameSize = r.wide ? 14 : 15;
+		const nameW = pitch - 8;
 
 		r.tiles.forEach((t, ti) => {
 			const x = TILE_X0 + ti * pitch;
@@ -397,26 +441,26 @@ export function LibrarySections({
 				<React.Fragment key={`${r.id}-${t.key}`}>
 					<CoverSlot url={t.coverUrl} glyph={covered} x={x} y={rowY + 2} width={coverW} height={coverH} />
 
-					{/* Multi-disc badge, scaled down for the small tile. */}
+					{/* Multi-disc badge over the corner of the cover. */}
 					{t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined && (
 						<Rect
-							x={x + 4}
-							y={rowY + 6}
-							width={26}
-							height={14}
+							x={x + 6}
+							y={rowY + 8}
+							width={36}
+							height={20}
 							fill={colors.accent}
 							borderRadius={radius.sm}
 						/>
 					)}
 					{t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined && (
-						<Text x={x + 4 + 13} y={rowY + 8} fontFamily={fontFamily} fontSize={10} fontWeight="bold" fill={colors.bg} textAlign="center">
+						<Text x={x + 6 + 18} y={rowY + 10} fontFamily={fontFamily} fontSize={13} fontWeight="bold" fill={colors.bg} textAlign="center">
 							{`${t.discIndex}/${t.discCount}`}
 						</Text>
 					)}
 
 					<Text
 						x={x}
-						y={rowY + 88}
+						y={rowY + 152}
 						fontFamily={fontFamily}
 						fontSize={nameSize}
 						fill={rowFocused && ti === focusSel ? colors.textPrimary : colors.textSecondary}
@@ -428,9 +472,9 @@ export function LibrarySections({
 					{t.sub !== '' && (
 						<Text
 							x={x}
-							y={rowY + 98}
+							y={rowY + 174}
 							fontFamily={fontFamily}
-							fontSize={11}
+							fontSize={12}
 							fill={colors.textFaint}
 							maxWidth={nameW}
 							overflow="ellipsis"
@@ -447,12 +491,12 @@ export function LibrarySections({
 			focusRing.push(
 				<Rect
 					key={`ring-${r.id}-label`}
-					x={LABEL_X - 4}
-					y={rowY + 12}
-					width={LABEL_W + 8}
-					height={ROW_H - 20}
+					x={LABEL_X - 6}
+					y={rowY + 16}
+					width={LABEL_W + 12}
+					height={ROW_H - 32}
 					stroke={colors.accent}
-					lineWidth={3}
+					lineWidth={4}
 					borderRadius={radius.lg}
 				/>,
 			);
@@ -462,12 +506,12 @@ export function LibrarySections({
 				focusRing.push(
 					<Rect
 						key={`ring-${r.id}-${t.key}`}
-						x={TILE_X0 + focusSel * pitch - 4}
-						y={rowY - 4}
-						width={coverW + 8}
-						height={coverH + 8}
+						x={TILE_X0 + focusSel * pitch - 6}
+						y={rowY - 6}
+						width={coverW + 12}
+						height={coverH + 12}
 						stroke={colors.accent}
-						lineWidth={3}
+						lineWidth={4}
 						borderRadius={radius.lg}
 					/>,
 				);
@@ -480,6 +524,20 @@ export function LibrarySections({
 			<Rect width={dims.width} height={dims.height} fill={colors.bg} />
 
 			{rowTiles}
+
+			{/*
+			 * Two opaque bands mask the rows that overflow the viewport
+			 * (the grid's trick). The chrome is drawn on top of them.
+			 */}
+			<Rect x={0} y={0} width={dims.width} height={AREA_Y} fill={colors.bg} />
+			<Rect
+				x={0}
+				y={AREA_Y + AREA_H}
+				width={dims.width}
+				height={Math.max(0, dims.height - AREA_Y - AREA_H)}
+				fill={colors.bg}
+			/>
+
 			{focusRing}
 
 			<Header
