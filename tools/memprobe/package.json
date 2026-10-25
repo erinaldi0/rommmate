@@ -1,0 +1,15 @@
+{
+	"name": "romm-memprobe",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Standalone memory-attribution probe for RomMmate — replays each render-loop subsystem in isolation and meters the native arena",
+	"license": "MIT",
+	"author": "Emanuel Rinaldi",
+	"nacp": {
+		"id": "01ef076150b20002",
+		"title": "RomM MemProbe"
+	},
+	"scripts": {
+		"nro": "nxjs-nro --fat"
+	}
+}

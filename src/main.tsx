@@ -3,9 +3,11 @@ import { render } from 'react-tela/render';
 import { App } from './App';
 import { getFatalMessage, installErrorTrap, reportFatalError } from './errors';
 import { BUILD_ID } from './version';
+import { logBootId } from './mem';
 import { patchInsertBefore } from './react-tela-compat';
 
 installErrorTrap();
+logBootId();
 
 // High-quality image smoothing for the canvas (matters for cover art).
 const ctx = screen.getContext('2d');

@@ -14,6 +14,15 @@ import { readBinary } from './fs';
 const WINDOW = 1024 * 1024;
 
 /**
+ * One macrotask tick. SparkMD5 is pure JS running on the main thread, so
+ * without this a large hash monopolizes the loop for tens of seconds and
+ * the UI (and the download badge) freezes until it finishes. Yielding
+ * after every window costs almost nothing but keeps frames drawing
+ * throughout the verification step.
+ */
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+/**
  * MD5 of a file, read in windows.
  *
  * @returns the lowercase hex digest, or null when the file cannot be read.
@@ -29,6 +38,7 @@ export async function md5File(path: string): Promise<string | null> {
 		spark.append(bytes);
 		offset += bytes.length;
 		if (bytes.length < WINDOW) break;
+		await tick();
 	}
 	return spark.end();
 }

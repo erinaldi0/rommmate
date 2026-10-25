@@ -21,8 +21,6 @@ export interface FilterChip {
 
 /** Chip that opens the search keyboard. */
 export const SEARCH_KEY = '__search';
-/** Chip that clears the platform filter. */
-export const ALL_KEY = '__all';
 
 /** A disc to show for a title: the player's choice, else the main disc. */
 export function shownDisc(t: RommTitle, selections: Record<number, number>): RommGame {
@@ -62,9 +60,14 @@ export function platformNames(titles: RommTitle[]): string[] {
 }
 
 /**
- * The filter bar's chips: the search, "All", and one per platform. The
- * platform counts are taken from the *searched* set, so the two filters
- * compose in what the bar shows.
+ * The filter bar's chips: the search and one per platform — never an
+ * "All" chip. The library has no whole-library view by design: the user
+ * navigates via platforms, collections, favourites and last played, so a
+ * grid is always inside one of those scopes and the chips only narrow
+ * (or move between platforms within it).
+ *
+ * The platform counts are taken from the *searched* set, so the two
+ * filters compose in what the bar shows.
  */
 export function buildFilterChips(titles: RommTitle[], query: string, platform: string): FilterChip[] {
 	const needle = query.trim().toLowerCase();
@@ -76,7 +79,6 @@ export function buildFilterChips(titles: RommTitle[], query: string, platform: s
 			label: needle === '' ? 'Search' : `Search: ${query.trim()}`,
 			active: needle !== '',
 		},
-		{ key: ALL_KEY, label: 'All', count: searched.length, active: platform === '' },
 	];
 	for (const name of platformNames(titles)) {
 		out.push({
@@ -91,6 +93,6 @@ export function buildFilterChips(titles: RommTitle[], query: string, platform: s
 
 /** The chip that should own the focus when the filter bar is entered. */
 export function activeChipIndex(chips: FilterChip[]): number {
-	const i = chips.findIndex((c) => c.active && c.key !== SEARCH_KEY && c.key !== ALL_KEY);
-	return i >= 0 ? i : 1;
+	const i = chips.findIndex((c) => c.active && c.key !== SEARCH_KEY);
+	return i >= 0 ? i : 0;
 }

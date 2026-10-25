@@ -60,7 +60,6 @@ export function Header({ title, subtitle = '', meta = '', badge = '', build = ''
 						y={29}
 						fontFamily={fontFamily}
 						fontSize={fontSize.tiny}
-						fontWeight="bold"
 						fill={colors.textPrimary}
 						textAlign="center"
 					>

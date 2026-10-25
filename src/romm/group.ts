@@ -67,6 +67,19 @@ export function groupTitles(games: RommGame[]): RommTitle[] {
 			if (s.isMain) b.main.set(sk, true);
 		}
 		if (g.isMain) b.main.set(k, true);
+
+		// The arrived rom's own disc comparator is only ever seen in the
+		// sibling lists of the *other* discs. When none has arrived yet
+		// but every sibling stub shares one comparator (RomM derives it
+		// from the release's name, so a release usually carries one
+		// value), adopt it — otherwise the self entry falls back to its
+		// file name and sorts apart from its own release, which would
+		// renumber the discs differently from the full library walk.
+		if (b.sort.get(k) === undefined) {
+			const shared = new Set<string>();
+			for (const s of g.siblings) if (s.sort !== '') shared.add(s.sort);
+			if (shared.size === 1) b.sort.set(k, [...shared][0]);
+		}
 	});
 
 	// First-appearance order (the bucket recorded it), which keeps the
@@ -87,7 +100,16 @@ export function groupTitles(games: RommGame[]): RommTitle[] {
 			const sort = b.sort.get(k) ?? game?.fsName ?? game?.name ?? k;
 			discs.push({ key: k, game, label, sort, isMain: game?.isMain === true || b.main.get(k) === true });
 		}
-		discs.sort((a, z) => (a.sort === z.sort ? 0 : a.sort < z.sort ? -1 : 1));
+		discs.sort((a, z) => {
+			if (a.sort !== z.sort) return a.sort < z.sort ? -1 : 1;
+			// Equal ordering keys: the id is the only tiebreak that is
+			// stable across walks — insertion order differs between the
+			// full library and a partial favourites/collection walk, and
+			// the disc number must not depend on which walk ran.
+			const ia = a.key.startsWith('s') ? Number.MAX_SAFE_INTEGER : Number(a.key);
+			const iz = z.key.startsWith('s') ? Number.MAX_SAFE_INTEGER : Number(z.key);
+			return ia - iz;
+		});
 
 		const fullDiscs: RommGame[] = [];
 		const discReleaseSlots: number[] = [];

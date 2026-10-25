@@ -34,10 +34,7 @@ export function HintBar({ hints }: Props) {
 		return {
 			button,
 			label,
-			width:
-				BADGE_W +
-				BADGE_GAP +
-				measure(ctx, label, fontSize.small),
+			width: BADGE_W + BADGE_GAP + measure(ctx, label, fontSize.small),
 		};
 	});
 
@@ -47,6 +44,11 @@ export function HintBar({ hints }: Props) {
 
 	let x = (dims.width - total) / 2;
 	const y = dims.height - 52;
+	// One shared midline for the whole bar. Every glyph — badge letters
+	// and descriptions alike — centres on it (`textBaseline: 'middle'`),
+	// so different font sizes can never drift onto different baselines
+	// (the old badge/label pair sat a few pixels off from each other).
+	const mid = y + BADGE_H / 2;
 
 	return (
 		<>
@@ -67,26 +69,27 @@ export function HintBar({ hints }: Props) {
 						/>
 						<Text
 							x={itemX + BADGE_W / 2}
-							y={y + 6}
+							y={mid - 1}
 							fontFamily={fontFamily}
 							fontSize={fontSize.tiny}
-							fontWeight="bold"
 							fill={colors.accent}
 							textAlign="center"
+							textBaseline="middle"
 						>
 							{item.button}
 						</Text>
 						<Text
 							x={itemX + BADGE_W + BADGE_GAP}
-							y={y + 5}
+							y={mid}
 							fontFamily={fontFamily}
 							fontSize={fontSize.small}
 							fill={colors.textMuted}
+							textBaseline="middle"
 						>
 							{item.label}
 						</Text>
 					</React.Fragment>
-		);
+				);
 			})}
 		</>
 	);

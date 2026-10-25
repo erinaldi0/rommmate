@@ -1,6 +1,11 @@
 /**
- * The dashboard's row model: how the library is summarised into the five
+ * The dashboard's row model: how the library is summarised into the
  * horizontal rows of `LibrarySections`, and each row's cover tiles.
+ *
+ * The platform row is deliberately not built here: the redesigned dashboard
+ * shows platforms as a strip of logo chips rather than as cover tiles, so
+ * `buildPlatformChips` (the same aggregation, a different shape) builds it
+ * separately.
  *
  * Pure construction, no React: a row is a label, a count, what A opens,
  * and up to `MAX_TILES` covers. Empty rows are simply not built, so a
@@ -12,7 +17,8 @@ import type { Fit } from '../../covers';
 import { relativeTime, formatDate } from '../../time';
 import type { LibrarySection, RommCollection, RommPlatform, RommTitle } from '../../romm';
 
-interface Tile {
+/** A cover tile of one row. Exported for the row renderers. */
+export interface Tile {
 	key: string;
 	coverUrl: string;
 	/** First line under the cover. */
@@ -24,8 +30,8 @@ interface Tile {
 	/** The disc the tile shows, for multi-disc titles. */
 	discIndex?: number;
 	discCount?: number;
-	/** What A does with this cover. */
-	section: LibrarySection;
+	/** What A does with this cover (title tiles open the title instead). */
+	section?: LibrarySection;
 	title?: RommTitle;
 }
 
@@ -35,12 +41,66 @@ interface Row {
 	label: string;
 	/** The small count after the header. */
 	countLabel: string;
-	/** What A on the header opens. */
-	section: LibrarySection;
+	/**
+	 * What A on the header opens. Null for rows that are pure browsing
+	 * aids (platforms, recent, collections — their covers navigate): the
+	 * library is never shown whole, so their headers open nothing.
+	 */
+	section: LibrarySection | null;
 	tiles: Tile[];
 }
 /** How many covers one row shows; the rest live in the row's grid. */
 export const MAX_TILES = 9;
+
+/** One platform chip of the strip row. */
+export interface PlatformChip {
+	key: string;
+	name: string;
+	/** The platform's own logo, or '' (a text-only chip is drawn). */
+	logoUrl: string;
+	/** How many roms this platform holds in the library. */
+	count: number;
+	section: LibrarySection;
+}
+
+/**
+ * The platforms strip: every platform the library has roms for, the
+ * biggest libraries first, wearing the platform's own logo (the same
+ * artwork the RomM web UI shows). A platform the server reports no logo
+ * for renders as a text-only chip.
+ */
+export function buildPlatformChips(
+	titles: RommTitle[],
+	platforms: RommPlatform[]
+): PlatformChip[] {
+	const platformById = new Map<number, RommPlatform>();
+	for (const p of platforms) {
+		if (p.id > 0) platformById.set(p.id, p);
+	}
+	const byPlatform = new Map<string, { count: number; platformId: number }>();
+	for (const t of titles) {
+		if (t.platform === '') continue;
+		const entry = byPlatform.get(t.platform);
+		if (entry === undefined) {
+			byPlatform.set(t.platform, { count: 1, platformId: t.platformId });
+		} else {
+			entry.count += 1;
+		}
+	}
+	return [...byPlatform.entries()]
+		.sort((a, b) => (a[1].count !== b[1].count ? b[1].count - a[1].count : a[0] < b[0] ? -1 : 1))
+		.map(([name, info]) => {
+			const known = info.platformId > 0 ? platformById.get(info.platformId) : undefined;
+			return {
+				key: `platform-${name}`,
+				name,
+				logoUrl: known?.logoUrl ?? '',
+				count: info.count,
+				section: { kind: 'platform' as const, platform: name },
+			};
+		});
+}
+
 export function buildRows(
 	titles: RommTitle[],
 	favoriteTitles: RommTitle[],
@@ -80,50 +140,8 @@ export function buildRows(
 		});
 	}
 
-	// Platforms: the platform's own logo per row (the same artwork the
-	// RomM web UI shows), the biggest libraries first. A platform the
-	// server reports no logo for falls back to one of its covers.
-	const platformById = new Map<number, RommPlatform>();
-	for (const p of platforms) {
-		if (p.id > 0) platformById.set(p.id, p);
-	}
-	const byPlatform = new Map<string, { count: number; cover: string; platformId: number }>();
-	for (const t of titles) {
-		if (t.platform === '') continue;
-		const entry = byPlatform.get(t.platform);
-		if (entry === undefined) {
-			byPlatform.set(t.platform, { count: 1, cover: t.coverUrl, platformId: t.platformId });
-		} else {
-			entry.count += 1;
-			if (entry.cover === '' && t.coverUrl !== '') entry.cover = t.coverUrl;
-		}
-	}
-	const platformRows = [...byPlatform.entries()].sort(
-		(a, b) => (a[1].count !== b[1].count ? b[1].count - a[1].count : a[0] < b[0] ? -1 : 1),
-	);
-	if (platformRows.length > 0) {
-		out.push({
-			id: 'platforms',
-			label: 'Platforms',
-			countLabel: `${platformRows.length} ${platformRows.length === 1 ? 'platform' : 'platforms'}`,
-			section: { kind: 'recent' }, // headers never open this one; covers do
-			tiles: platformRows.slice(0, MAX_TILES).map(([name, info]) => {
-				const known = info.platformId > 0 ? platformById.get(info.platformId) : undefined;
-				const logo = known?.logoUrl ?? '';
-				return {
-					key: `platform-${name}`,
-					// The logo is letterboxed (its aspect is the IGDB
-					// one, not the cover box's); a cover stand-in fills.
-					coverUrl: logo !== '' ? logo : info.cover,
-					fit: logo !== '' ? ('contain' as const) : undefined,
-					name,
-					sub: `${info.count} ${info.count === 1 ? 'game' : 'games'}`,
-					section: { kind: 'platform', platform: name },
-				};
-			}),
-		});
-	}
-
+	// (The platforms row moved into `buildPlatformChips`: the redesigned
+	// dashboard renders platforms as a logo-chip strip, not cover tiles.)
 	const recent = titles
 		.filter((t) => t.createdAt !== '')
 		.sort((a, b) => (a.createdAt > b.createdAt ? -1 : a.createdAt < b.createdAt ? 1 : 0))
@@ -133,7 +151,7 @@ export function buildRows(
 			id: 'recent',
 			label: 'Recently added',
 			countLabel: `${titles.filter((t) => t.createdAt !== '').length} games`,
-			section: { kind: 'recent' },
+			section: null, // a browsing aid: its covers open titles, never a grid
 			tiles: recent.map((t) => tileFromTitle(t, discSelections, formatDate(t.createdAt))),
 		});
 	}
@@ -143,7 +161,7 @@ export function buildRows(
 			id: 'collections',
 			label: 'Collections',
 			countLabel: `${collections.length} ${collections.length === 1 ? 'collection' : 'collections'}`,
-			section: { kind: 'recent' }, // ditto
+			section: null, // ditto
 			tiles: collections.slice(0, MAX_TILES).map((c) => ({
 				key: `collection-${c.id}`,
 				coverUrl: c.coverUrl,
@@ -155,6 +173,66 @@ export function buildRows(
 	}
 
 return out;
+}
+
+/**
+ * A row as the screen displays it: `buildRows`'s tile rows with the
+ * platform strip spliced in between Favourites and Recently added.
+ */
+export interface DisplayRow {
+	id: string;
+	/** The header above the row. */
+	label: string;
+	/** The small count after the header. */
+	countLabel: string;
+	/**
+	 * What A on the header opens. Null for rows that are pure browsing
+	 * aids (platforms, recent, collections — their covers navigate): the
+	 * library is never shown whole, so their headers open nothing.
+	 */
+	section: LibrarySection | null;
+	/** 'chips' rows render their chips instead of cover tiles. */
+	kind: 'tiles' | 'chips';
+	tiles: Tile[];
+	chips: PlatformChip[];
+}
+
+/**
+ * The dashboard's displayed rows, in screen order. An empty library yields
+ * no rows at all (the screen then shows its empty state).
+ */
+export function buildDisplayRows(
+	titles: RommTitle[],
+	favoriteTitles: RommTitle[],
+	platforms: RommPlatform[],
+	collections: RommCollection[],
+	discSelections: Record<number, number>,
+): DisplayRow[] {
+	const tileRows = buildRows(titles, favoriteTitles, platforms, collections, discSelections);
+	const chips = buildPlatformChips(titles, platforms);
+	const out: DisplayRow[] = [];
+	let chipsPlaced = chips.length === 0;
+	for (const r of tileRows) {
+		if (r.id === 'recent' && !chipsPlaced) {
+			out.push(makeChipsRow(chips));
+			chipsPlaced = true;
+		}
+		out.push({ ...r, kind: 'tiles', chips: [] });
+	}
+	if (!chipsPlaced) out.push(makeChipsRow(chips));
+	return out;
+}
+
+function makeChipsRow(chips: PlatformChip[]): DisplayRow {
+	return {
+		id: 'platforms',
+		label: 'Platforms',
+		countLabel: `${chips.length} ${chips.length === 1 ? 'platform' : 'platforms'}`,
+		section: null, // chips navigate (into the platform's grid)
+		kind: 'chips',
+		tiles: [],
+		chips,
+	};
 }
 
 /**
@@ -184,7 +262,6 @@ return {
 	sub,
 	discIndex: t.knownDiscs > 1 ? releaseSlot : undefined,
 	discCount: t.knownDiscs > 1 ? t.knownDiscs : undefined,
-	section: { kind: 'recent' }, // the label opens the row; covers open the title
 	title: t,
 };
 }

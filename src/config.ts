@@ -1,7 +1,24 @@
 /**
- * App configuration, persisted via the runtime's `localStorage`
- * (backed by the Switch Save Data filesystem — no SD file juggling).
+ * App configuration.
+ *
+ * The primary store is a small JSON file on the SD card
+ * (`sdmc:/switch/rommmate/config.json`). The runtime's `localStorage`
+ * is Save-Data backed, which needs a selected user profile and a
+ * save-data mount to exist — launched from the homebrew menu it can
+ * silently no-op, losing every setting between launches. The SD file
+ * has neither dependency, and its synchronous calls
+ * (`readFileSync`/`writeFileSync`) keep `loadConfig`/`saveConfig`
+ * signature-compatible with the boot flow that uses them.
+ *
+ * `localStorage` stays as a second copy: the preview's only store, and
+ * the migration source for a device that did manage to save there.
+ * Either store alone is enough to boot from.
  */
+import { readTextSync, writeTextSync } from './fs';
+import { log } from './log';
+import { PATHS } from './retroarch/layout';
+
+const CONFIG_PATH = `${PATHS.appDir}/config.json`;
 
 const KEY_BASE_URL = 'rommate.baseUrl';
 const KEY_TOKEN = 'rommate.token';
@@ -84,29 +101,73 @@ export interface Config {
 	coreChoices?: Record<string, string>;
 }
 
+/** Validate an untrusted value as the per-platform core picks. */
+function coreChoicesFrom(raw: unknown): Record<string, string> | undefined {
+	if (typeof raw === 'string') {
+		try {
+			raw = JSON.parse(raw) as unknown;
+		} catch {
+			return undefined; // a corrupt pick degrades to the default
+		}
+	}
+	if (typeof raw !== 'object' || raw === null) return undefined;
+	return Object.fromEntries(
+		Object.entries(raw as Record<string, unknown>)
+			.filter(([, v]) => typeof v === 'string')
+			.map(([k, v]) => [k, v as string]),
+	);
+}
+
+/** Parse a stored SD-file JSON into a Config; null when unusable. */
+function configFromJson(raw: string): Config | null {
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== 'object' || parsed === null) return null;
+		const o = parsed as Record<string, unknown>;
+		if (typeof o.baseUrl !== 'string') return null;
+		const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+		return {
+			baseUrl: o.baseUrl,
+			token: str(o.token),
+			authMethod: AUTH_METHODS.includes(o.authMethod as AuthMethod)
+				? (o.authMethod as AuthMethod)
+				: DEFAULT_AUTH_METHOD,
+			username: str(o.username),
+			password: str(o.password),
+			refreshToken: str(o.refreshToken),
+			tokenExpiresAt:
+				typeof o.tokenExpiresAt === 'number' && Number.isFinite(o.tokenExpiresAt)
+					? o.tokenExpiresAt
+					: 0,
+			pairingCode: str(o.pairingCode),
+			pairingToken: str(o.pairingToken),
+			keyboard: KEYBOARD_MODES.includes(o.keyboard as KeyboardMode)
+				? (o.keyboard as KeyboardMode)
+				: DEFAULT_KEYBOARD,
+			// The default is on: the stored value only matters when off.
+			autoSync: o.autoSync !== false,
+			coreChoices: coreChoicesFrom(o.coreChoices),
+		};
+	} catch {
+		return null;
+	}
+}
+
 export function loadConfig(): Config {
+	// The SD copy is the primary store — read synchronously so the boot
+	// flow (a `useState` initializer) keeps its shape.
+	const sdRaw = readTextSync(CONFIG_PATH);
+	if (sdRaw !== null) {
+		const sd = configFromJson(sdRaw);
+		if (sd !== null) return sd;
+		log('config', 'sd config unreadable — trying localStorage');
+	}
 	try {
 		const ls = localStorage;
 		const keyboard = ls?.getItem(KEY_KEYBOARD);
 		const authMethod = ls?.getItem(KEY_AUTH_METHOD);
 		const autoSync = ls?.getItem(KEY_AUTO_SYNC);
-		const coreChoicesRaw = ls?.getItem(KEY_CORE_CHOICES) ?? '';
-		let coreChoices: Record<string, string> | undefined;
-		if (coreChoicesRaw !== '') {
-			try {
-				const parsed: unknown = JSON.parse(coreChoicesRaw);
-				if (typeof parsed === 'object' && parsed !== null) {
-					coreChoices = Object.fromEntries(
-						Object.entries(parsed as Record<string, unknown>)
-							.filter(([, v]) => typeof v === 'string')
-							.map(([k, v]) => [k, v as string]),
-					);
-				}
-			} catch {
-				coreChoices = undefined; // a corrupt pick degrades to the default
-			}
-		}
-		return {
+		const cfg: Config = {
 			baseUrl: ls?.getItem(KEY_BASE_URL) ?? '',
 			token: ls?.getItem(KEY_TOKEN) ?? '',
 			authMethod: AUTH_METHODS.includes(authMethod as AuthMethod)
@@ -124,8 +185,14 @@ export function loadConfig(): Config {
 				: DEFAULT_KEYBOARD,
 			// The default is on: the stored value only matters when off.
 			autoSync: autoSync !== 'false',
-			coreChoices,
+			coreChoices: coreChoicesFrom(ls?.getItem(KEY_CORE_CHOICES) ?? ''),
 		};
+		// First boot on a device that only ever had the Save-Data copy:
+		// promote it to the SD so the profile-less launches keep it too.
+		if (cfg.baseUrl !== '' && writeTextSync(CONFIG_PATH, JSON.stringify(cfg))) {
+			log('config', 'migrated the localStorage copy to the SD card');
+		}
+		return cfg;
 	} catch {
 		return {
 			baseUrl: '',
@@ -147,33 +214,53 @@ function sanitize(value: string): string {
 }
 
 export function saveConfig(cfg: Config): void {
+	// Sanitized once: both stores receive the same cleaned values.
+	const clean = {
+		baseUrl: sanitize(cfg.baseUrl),
+		token: sanitize(cfg.token),
+		authMethod: cfg.authMethod ?? DEFAULT_AUTH_METHOD,
+		username: sanitize(cfg.username ?? ''),
+		password: sanitize(cfg.password ?? ''),
+		refreshToken: sanitize(cfg.refreshToken ?? ''),
+		tokenExpiresAt: cfg.tokenExpiresAt ?? 0,
+		pairingCode: sanitize(cfg.pairingCode ?? ''),
+		pairingToken: sanitize(cfg.pairingToken ?? ''),
+		keyboard: cfg.keyboard ?? DEFAULT_KEYBOARD,
+		autoSync: cfg.autoSync !== false,
+		coreChoices: cfg.coreChoices,
+	};
+	// Primary: the SD file (no profile or save-data dependency). A
+	// power-cut mid-write costs the file — the localStorage copy below
+	// is the independent second store to boot from.
+	if (!writeTextSync(CONFIG_PATH, JSON.stringify(clean))) {
+		log('config', 'sd write failed — localStorage only');
+	}
+	// Secondary: Save Data (the preview's store; a redundant copy on
+	// device — either store surviving is enough for the next launch).
 	try {
-		localStorage?.setItem(KEY_BASE_URL, sanitize(cfg.baseUrl));
-		localStorage?.setItem(KEY_TOKEN, sanitize(cfg.token));
-		localStorage?.setItem(KEY_AUTH_METHOD, cfg.authMethod ?? DEFAULT_AUTH_METHOD);
-		localStorage?.setItem(KEY_USERNAME, sanitize(cfg.username ?? ''));
-		localStorage?.setItem(KEY_PASSWORD, sanitize(cfg.password ?? ''));
-		localStorage?.setItem(KEY_REFRESH_TOKEN, sanitize(cfg.refreshToken ?? ''));
-		localStorage?.setItem(
-			KEY_TOKEN_EXPIRES_AT,
-			String(cfg.tokenExpiresAt ?? 0),
-		);
-		localStorage?.setItem(KEY_PAIRING_CODE, sanitize(cfg.pairingCode ?? ''));
-		localStorage?.setItem(KEY_PAIRING_TOKEN, sanitize(cfg.pairingToken ?? ''));
-		localStorage?.setItem(KEY_KEYBOARD, cfg.keyboard ?? DEFAULT_KEYBOARD);
-		localStorage?.setItem(KEY_AUTO_SYNC, cfg.autoSync === false ? 'false' : 'true');
+		localStorage?.setItem(KEY_BASE_URL, clean.baseUrl);
+		localStorage?.setItem(KEY_TOKEN, clean.token);
+		localStorage?.setItem(KEY_AUTH_METHOD, clean.authMethod);
+		localStorage?.setItem(KEY_USERNAME, clean.username);
+		localStorage?.setItem(KEY_PASSWORD, clean.password);
+		localStorage?.setItem(KEY_REFRESH_TOKEN, clean.refreshToken);
+		localStorage?.setItem(KEY_TOKEN_EXPIRES_AT, String(clean.tokenExpiresAt));
+		localStorage?.setItem(KEY_PAIRING_CODE, clean.pairingCode);
+		localStorage?.setItem(KEY_PAIRING_TOKEN, clean.pairingToken);
+		localStorage?.setItem(KEY_KEYBOARD, clean.keyboard);
+		localStorage?.setItem(KEY_AUTO_SYNC, clean.autoSync ? 'true' : 'false');
 		try {
 			localStorage?.setItem(
 				KEY_CORE_CHOICES,
-				cfg.coreChoices !== undefined ? JSON.stringify(cfg.coreChoices) : '',
+				clean.coreChoices !== undefined ? JSON.stringify(clean.coreChoices) : '',
 			);
 		} catch {
 			// The pick is the least-critical field: losing it costs one
 			// re-pick at most, not the session.
 		}
 	} catch {
-		// Save Data is unavailable (or full) — the session still works, the
-		// credentials just are not remembered across launches.
+		// Save Data is unavailable (or full) — the SD copy above is what
+		// the next launch reads.
 	}
 }
 

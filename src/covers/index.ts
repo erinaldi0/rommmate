@@ -41,6 +41,8 @@
  */
 import { setActivity } from '../activity';
 import { masterPng, preparePng } from './pipeline';
+import { log } from '../log';
+import { memSnapshot } from '../mem';
 /** The subset of the nx.js `Switch` namespace that the cache needs. */
 interface SwitchLike {
 	writeFile(path: string, data: string | BufferSource): Promise<void>;
@@ -70,9 +72,12 @@ const CACHE_DIR = 'sdmc:/rommate/covers';
  * How many artwork downloads may be in flight at once. Each one holds the
  * original file bytes in memory until the (downscaled) copy is written, so
  * an unbounded fan-out across a fast scroll could stack dozens of
- * multi-megabyte buffers at once.
+ * multi-megabyte buffers at once — the native "Out of memory (failed to
+ * allocate …)" RangeError on hardware. Two, not four: the dashboard can
+ * queue ~27 tiles at once, and the queue must drain without ever stacking
+ * more than a couple of decodes.
  */
-const MAX_FETCHES = 4;
+const MAX_FETCHES = 2;
 
 /** (url, size, fit) → local source that `<Image>` can draw. */
 const resolved = new Map<string, string>();
@@ -159,6 +164,12 @@ export function resolveCover(url: string, width: number, height: number, fit: Fi
 			inFlight.delete(key);
 			if (src !== '') resolved.set(key, src);
 			syncArtworkActivity();
+			// Every 25th resolution: a light growth probe of the artwork
+			// layer (enough to see it climbing over a long idle session
+			// without flooding the log during fast scrolls).
+			if (resolved.size % 25 === 0) {
+				log('covers', `resolved${resolved.size} inflight${inFlight.size} ${memSnapshot()}`);
+			}
 			return src;
 		},
 		() => {

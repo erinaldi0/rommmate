@@ -185,7 +185,21 @@ export async function installGame(
  * One file landed (or failed): merge it into the manifest's rom entry.
  * The entry appears as soon as the first file is placed, so the UI flips
  * from "installing" to "installed" without waiting for every file.
+ *
+ * The merge happens *after* the download queue's own completion notify,
+ * so interested parties (the play service re-deriving rom states) are
+ * told again here — without this a finished download left the game's
+ * detail screen showing "download" until the next boot.
  */
+let manifestChangeTap: (() => void) | null = null;
+/** Register the callback fired whenever a rom entry changes on disk. */
+export function onManifestChanged(tap: (() => void) | null): void {
+	manifestChangeTap = tap;
+}
+function fireManifestChanged(): void {
+	manifestChangeTap?.();
+}
+
 async function onRomFileDone(
 	game: RommGame,
 	plan: InstallPlan,
@@ -207,6 +221,7 @@ async function onRomFileDone(
 	if (status !== 'done') {
 		entry.outdated = true;
 		await saveManifest(manifest);
+		fireManifestChanged();
 		return;
 	}
 
@@ -239,6 +254,7 @@ async function onRomFileDone(
 
 	manifest.roms[key] = entry;
 	await saveManifest(manifest);
+	fireManifestChanged();
 	log('install', `${game.name}: ${plan.file.fileName} → ${plan.dest}`);
 }
 

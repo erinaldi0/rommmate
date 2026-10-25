@@ -8,6 +8,8 @@
  * staring at a half-drawn frame.
  */
 
+import { memSnapshot } from './mem';
+
 type Listener = (message: string) => void;
 
 let fatalMessage: string | null = null;
@@ -30,7 +32,17 @@ export function getFatalMessage(): string | null {
 /** Records the first fatal error and notifies every listener. */
 export function reportFatalError(err: unknown): void {
 	if (fatalMessage !== null) return;
-	fatalMessage = describe(err);
+	// The memory gauges at the moment of failure: a native malloc shortage
+	// (whoever allocated last) and the heap the JS side held — the single
+	// most useful number for an OOM report, on screen where every report
+	// has it.
+	let mem = '';
+	try {
+		mem = `\n\nmemory: ${memSnapshot()}`;
+	} catch {
+		/* the snapshot must never mask the error */
+	}
+	fatalMessage = describe(err) + mem;
 	for (const listener of listeners) listener(fatalMessage);
 }
 

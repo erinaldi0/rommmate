@@ -17,7 +17,6 @@ import { colors } from '../theme';
 import { CoverFocusRing, CoverTile, TITLE_BLOCK_H } from './CoverTile';
 import { FilterBar } from './FilterBar';
 import {
-	ALL_KEY,
 	SEARCH_KEY,
 	activeChipIndex,
 	buildFilterChips,
@@ -241,7 +240,10 @@ export function LibraryGrid({
 				openSearch();
 				return;
 			}
-			setPlatform(item.key === ALL_KEY ? '' : item.key);
+			// Platform chips switch between platforms; there is no "All"
+			// chip — the library is never shown whole (the dashboard's
+			// sections are the only ways in, and each one scopes its grid).
+			setPlatform(item.key);
 		},
 		[openSearch],
 	);

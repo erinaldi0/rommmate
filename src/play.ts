@@ -29,7 +29,7 @@ import {
 	type ToolingFile,
 } from './retroarch/emulator';
 import { sdFreeSpace } from './fs';
-import { installGame, uninstallGame } from './roms/install';
+import { installGame, uninstallGame, onManifestChanged } from './roms/install';
 import { downloadQueue } from './roms/download';
 import {
 	runSaveSync,
@@ -134,6 +134,10 @@ class PlayService {
 				if (match !== null) this.#recompute(Number(match[1]));
 			}
 		});
+		// The install bookkeeping lands in the manifest *after* the queue's
+		// notify (it saves + merges asynchronously); this tap re-derives the
+		// roms then, so a finished download flips the UI to "Play" at once.
+		onManifestChanged(() => this.#recomputeAll());
 		notify();
 	}
 

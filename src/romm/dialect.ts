@@ -98,6 +98,9 @@ export function filterQuery(options: GetGamesOptions | undefined): string {
 	if (options.platformId !== undefined && options.platformId > 0) {
 		parts.push(`platform_id=${options.platformId}`);
 	}
+	if (options.updatedAfter !== undefined && options.updatedAfter !== '') {
+		parts.push(`updated_after=${encodeURIComponent(options.updatedAfter)}`);
+	}
 	const col = options.collection;
 	if (col) {
 		if (col.kind === 'smart') parts.push(`smart_collection_id=${col.id}`);

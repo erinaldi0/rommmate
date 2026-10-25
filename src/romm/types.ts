@@ -167,11 +167,14 @@ export interface RommPlatform {
 /**
  * A browseable section of the library dashboard. Opening one shows the
  * grid with that slice of the library.
+ *
+ * Deliberately no "whole library" section: the user navigates via
+ * platforms, collections, favourites and last played — a grid is always
+ * inside one of those scopes.
  */
 export type LibrarySection =
 	| { kind: 'continue' }
 	| { kind: 'favourites' }
-	| { kind: 'recent' }
 	| { kind: 'platform'; platform: string }
 	| { kind: 'collection'; collection: RommCollection };
 
@@ -183,4 +186,10 @@ export interface GetGamesOptions {
 	collection?: RommCollection;
 	/** Only the roms of one platform (its server id; a 5.x filter). */
 	platformId?: number;
+	/**
+	 * Only roms updated after this ISO 8601 instant (RomM 3.6+; the
+	 * incremental sync's sweep — a server that ignores the parameter
+	 * answers with everything, which the caller accepts).
+	 */
+	updatedAfter?: string;
 }

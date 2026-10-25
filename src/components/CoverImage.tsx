@@ -30,6 +30,14 @@ interface Props {
 	 * their way, 'ready' once they are, 'failed' when they never arrive.
 	 */
 	onStatus?: (status: CoverStatus) => void;
+	/**
+	 * Whether this artwork should be fetched at all. A tile that is not
+	 * actually on screen (beyond the viewport's edge) keeps its placeholder
+	 * and downloads nothing — on-device memory is the binding constraint,
+	 * so the dashboard only fetches the covers it displays. Turning the
+	 * gate on (the tile entering the viewport) starts the normal resolve.
+	 */
+	enabled?: boolean;
 }
 
 /**
@@ -41,7 +49,17 @@ interface Props {
  * known. Until then this renders nothing and the caller keeps its
  * placeholder visible.
  */
-export function CoverImage({ url, x, y, width, height, fit = 'cover', onLoaded, onStatus }: Props) {
+export function CoverImage({
+	url,
+	x,
+	y,
+	width,
+	height,
+	fit = 'cover',
+	onLoaded,
+	onStatus,
+	enabled = true,
+}: Props) {
 	const [src, setSrc] = useState('');
 	const entityRef = React.useRef<React.ElementRef<typeof Image> | null>(null);
 
@@ -76,6 +94,14 @@ export function CoverImage({ url, x, y, width, height, fit = 'cover', onLoaded, 
 			onStatus?.('ready');
 			return;
 		}
+		if (!enabled) {
+			// Off-screen: the plate and glyph stay, nothing downloads. The
+			// status falls back to 'loading' so the placeholder logic in
+			// the caller keeps the tile's plate drawn.
+			setSrc('');
+			onStatus?.('loading');
+			return;
+		}
 
 		let cancelled = false;
 		onStatus?.('loading');
@@ -102,7 +128,7 @@ export function CoverImage({ url, x, y, width, height, fit = 'cover', onLoaded, 
 		// callback change would restart the download. `width`, `height` and
 		// `fit` are: a different box is a different artwork to fetch.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [url, width, height, fit]);
+	}, [enabled, url, width, height, fit]);
 
 	if (src === '') return null;
 

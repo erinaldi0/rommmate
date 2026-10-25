@@ -23,14 +23,25 @@ export interface TextContext {
 	measureText(text: string): { width: number };
 }
 
-/** Sets the font on a context and returns the width of `text` in pixels. */
+/**
+ * Sets the font on a context and returns the width of `text` in pixels.
+ *
+ * The `weight` parameter was dropped deliberately: the nx.js runtime cannot
+ * produce a bold face at all (its `set font` keeps a normal-weight system
+ * face for every request), so `bold` strings never rendered bold — but each
+ * distinct bold string permanently missed the runtime's FontFaceSet and
+ * re-added two FontFaces (each backed by a copy of the shared system font)
+ * *per render*, until the native arena filled and the process OOM'd, while
+ * the ever-growing set made every subsequent lookup slower (fps decay).
+ * Fat strings measured identically as normal anyway, so measurement uses
+ * normal-weight strings only.
+ */
 export function measure(
 	ctx: TextContext,
 	text: string,
 	size: number,
-	weight = '',
 ): number {
-	ctx.font = `${weight} ${size}px ${fontFamily}`.trim();
+	ctx.font = `${size}px ${fontFamily}`;
 	return ctx.measureText(text).width;
 }
 
@@ -47,7 +58,6 @@ export function wrapLines(
 	maxWidth: number,
 	maxLines: number,
 	size: number,
-	weight = '',
 ): string[] {
 	const clean = text.replace(/\s+/g, ' ').trim();
 	if (clean === '' || maxLines <= 0) return [];
@@ -58,7 +68,7 @@ export function wrapLines(
 
 	for (const word of words) {
 		const candidate = current === '' ? word : `${current} ${word}`;
-		if (current !== '' && measure(ctx, candidate, size, weight) > maxWidth) {
+		if (current !== '' && measure(ctx, candidate, size) > maxWidth) {
 			lines.push(current);
 			current = word;
 			if (lines.length === maxLines) break;
@@ -70,14 +80,14 @@ export function wrapLines(
 
 	// Text left over (or a last line that is too wide) is folded into the
 	// final line and truncated with an ellipsis.
-	if (lines.length === 0) return [truncate(ctx, clean, maxWidth, size, weight)];
+	if (lines.length === 0) return [truncate(ctx, clean, maxWidth, size)];
 
 	const consumed = lines.join(' ');
 	const rest = clean.slice(consumed.length).trim();
 	const last = lines[lines.length - 1];
 
-	if (rest !== '' || measure(ctx, last, size, weight) > maxWidth) {
-		lines[lines.length - 1] = truncate(ctx, `${last} ${rest}`.trim(), maxWidth, size, weight);
+	if (rest !== '' || measure(ctx, last, size) > maxWidth) {
+		lines[lines.length - 1] = truncate(ctx, `${last} ${rest}`.trim(), maxWidth, size);
 	}
 
 	return lines;
@@ -89,14 +99,13 @@ export function truncate(
 	text: string,
 	maxWidth: number,
 	size: number,
-	weight = '',
 ): string {
-	if (measure(ctx, text, size, weight) <= maxWidth) return text;
+	if (measure(ctx, text, size) <= maxWidth) return text;
 
 	let out = text;
 	while (out.length > 0) {
 		out = out.slice(0, -1);
-		if (measure(ctx, out + ELLIPSIS, size, weight) <= maxWidth) return out + ELLIPSIS;
+		if (measure(ctx, out + ELLIPSIS, size) <= maxWidth) return out + ELLIPSIS;
 	}
 	return ELLIPSIS;
 }

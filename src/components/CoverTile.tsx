@@ -144,7 +144,6 @@ export function CoverTile({
 						y={y + 12}
 						fontFamily={fontFamily}
 						fontSize={13}
-						fontWeight="bold"
 						fill={colors.bg}
 						textAlign="center"
 					>

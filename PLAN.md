@@ -426,4 +426,153 @@ The long-form notes lived here through v0.12; the git history keeps the detail.
 | v0.10 | Three sign-in methods (token / password grant + rotated refresh / pairing code) with deduped 401 recovery; on-device log; nifm network pre-flight + actionable error mapping; artwork memory fixes (SD-first, 4-way fetch cap, ≤640 px downscale); streaming library load; `tools/nettest` diagnostic NRO; shared `normalizeBaseUrl` |
 | v0.11 | Five-row library dashboard (continue/favourites/platforms/recent/collections), multi-disc titles + disc picker, react-tela `insertBefore` compat patch, dashboard z-order fix (plate merged into the border rect) |
 | v0.12 | Container-resolution artwork (per-size derived cache, `contain` fit), platform-logo row, favourites disc badge (`knownDiscs`/`discReleaseSlots`), build-id stamping, module refactor (`session.ts`, `romm/`, `covers/`, `gamepad/`, `lib/`, `dashboard/`) |
-| **v13** | **Play: rom downloads, RetroArch + BIOS + cores from RomM, in-game launch, save + state sync** (this plan) |
+| v13 | Play: rom downloads, RetroArch + BIOS + cores from RomM, in-game launch, save + state sync |
+| **v14** | **The dashboard must not crash and the settings must not vanish: one streamed `/api/roms` request, an NDJSON library cache, background covers, visible-covers-only fetching, an SD-card config store, and stable disc numbering — and no whole-library view anywhere** (below) |
+| v15 | Dashboard redesigned to the new mockup: hero with inline install/play + sync saves + install panel + disc pager, platforms as a chip strip, X section menu, and the screen split into `dashboard/` subcomponents (below) |
+
+## v15 — The dashboard, redesigned and split
+
+The home screen was rebuilt against a fresh mockup and, at 1 300 lines,
+cut apart while it was done. What changed visually: the header is louder
+(glyph tile, product name, tagline, library count, build, a tappable
+gear); the featured game — the hero, most recently played else most
+recently added — draws large with its install state, a summary, and
+**inline actions**: "Install game" (with the A keycap), "Sync saves",
+and "More" (the detail screen) all run on the dashboard through the play
+service, no navigation needed. The hero is also the *preview*: a row
+cover's focus moves the featured content to that game (box art, facts,
+actions — so "Install game" always installs what is on display), and
+the featured game returns when the focus comes home. A right-hand
+installation card shows the
+progress, the phase, the facts grid (platform / genres / released /
+size) and, for multi-disc releases, a disc pager that Left/Right drives.
+Below, rows keep the v11 model; Platforms became a strip of logo chips
+that scrolls itself to keep the focused chip in view; X opens a section
+menu (the hero first, then every row) so the whole screen is reachable
+in two presses; `+` toggles between the hero and the rows.
+
+The discipline survived the rewrite: covers download only when their
+slot is inside the viewport (rows cull columns past the right edge, the
+strip culls chips, `CoverImage`'s `enabled` prop does the rejecting),
+the rows fill in as the streamed walk appends, and the masking bands —
+rows scroll under them, chrome paints above — came along unchanged.
+
+What is where now:
+
+- **`components/dashboard/layout.ts`** — the one geometry table (Mar-
+  gins, row grid, hero zone, panel column) every subcomponent agrees on.
+- **`dashboard/hero.ts`** — the hero model (+ shared play-state bits the
+  detail screen reuses: `primaryRow`, the state chip, byte formatting).
+- **`dashboard/HeroCard.tsx`** / **`InstallPanel.tsx`** — the hero's two
+  columns, purely presentational.
+- **`dashboard/TileRow.tsx`**, **`PlatformChipStrip.tsx`**,
+  **`SectionMenu.tsx`**, **`cover-slot.tsx`** — one row of covers, the
+  chip strip, the X overlay, the shared cover frame.
+- **`LibrarySections.tsx`** — what must be in one mind: focus state,
+  row scroll, gamepad input, paint order, composition.
+
+## v14 — Library load, cached and streamed
+
+**The crash**: on device, the dashboard died with an out-of-memory while
+"loading roms". The v13 walk fetches `/api/roms` in 13 pages of 100 and
+calls `setGames` per page; every append re-sorts the rows, remounting the
+cover slots of every visible row — up to 9 per row, ~27 tiles at boot —
+each queueing a cover job (4 concurrent) whose native decode + PNG
+re-encode costs ~3–4 MB transient. Stacked on 13 × 2 MB `JSON.parse`
+spikes, the 32-bit V8 heap loses. The live server made it worse: the
+whole-library payload is **27.5 MB**, 21 MB of it `merged_ra_metadata` +
+`ss_metadata` we never read.
+
+**The directive**: `/api/roms` is not that heavy — load and save the
+*entire* result locally in one request; covers download in background;
+render only the covers actually displayed on the home screen. And the
+library is **never** shown whole: the user navigates via platforms,
+collections, favourites and last played.
+
+### What landed
+
+- **`src/romm/stream.ts`** — `ItemStream`, an incremental JSON scanner
+  that walks the wrapper, skips every non-`items` value without
+  materialising it, and emits each array element as a raw string the
+  caller parses one at a time. A chunk may end between any two tokens
+  (between a key and its colon, between the colon and `[`, mid-string,
+  mid-UTF-8-sequence): the seek is a resumable stage machine
+  (`start → key → colon → open → value → afterValue`), scalars
+  (`total`/`limit`) are captured wherever they sit in the wrapper, and
+  the decode loop holds back incomplete UTF-8 tails instead of dropping
+  them. Bare-array bodies are handled. Tested (`tools/streamtest.ts`)
+  against the saved 26.3 MB payload at 64 KB and 7919-byte chunks (1266
+  items, ~180 ms) and a 512 KB head at 1/2/3/7/13/4096-byte chunks.
+- **`src/romm/client.ts` — `getGamesStream`** — preflights
+  `modernQuery(1,0,…)` for the dialect + total, then one streamed
+  `limit=2000` request (verified honoured: echoed `limit: 2000`). Items
+  append through a deduping `addRaw`; the callback may render batches
+  incrementally, but the App does not — nothing is drawn mid-walk
+  (below). Legacy servers (pre-5.x) and unstreamable bodies fall back to
+  the paged walk.
+- **`src/library-cache.ts`** — the entire result saved as NDJSON at
+  `sdmc:/switch/rommmate/library.ndjson` (header line carries version +
+  base + ts; version-gated, per-instance). Writes batch at 32 KB to a
+  temp file and `move` atomically; reads window 256 KB and split at the
+  last newline — the 32-bit heap never sees the file whole.
+- **`src/App.tsx`** — boot is **cache-first**: the saved library paints
+  instantly (badge "saved library"), then the streamed walk refreshes in
+  background; on failure the cache stays up with a plain-language
+  notice. A successful walk rewrites the cache behind the UI. The walk
+  itself renders **nothing** until it completes: per-batch appends made
+  the rows pop in and reshuffle (the server streams name-ordered, so
+  "recently added" kept displacing tiles), and every reshuffle queued
+  cover downloads for tiles that were about to be replaced. First run
+  (no cache) stays on the connect screen with a live counter, then the
+  dashboard appears once, complete.
+- **Covers, visibly only** — `CoverImage` grows an `enabled` prop
+  (disabled = plate, zero work); `LibrarySections` computes the widest
+  visible column from the screen width and only enables tiles inside it
+  (plus the focused one); `covers` concurrency drops 4 → 2. Rows mount
+  ~27 tiles at boot either way (1280 px shows all 9 columns), but the
+  queued-decode storm is gone.
+- **No whole-library view** — the `recent` grid section is gone
+  (`LibrarySection` has no `recent` kind); the Platforms/Recent/
+  Collections row headers open nothing (their covers navigate); the
+  grid's filter bar loses its "All" chip, so a grid is always inside a
+  platform/collection/favourites/continue scope. The Recently added row
+  survives as a browsing aid: its nine covers open titles directly.
+- **`tools/libtest.ts`** — live E2E: the streamed walk (1266 games in
+  one request, ~12 s server-bound, no duplicates, count agrees with the
+  paged walk), the cache round-trip (byte-identical first/last game,
+  foreign base rejected), and the auth probe.
+- **Settings persist on the SD card** — `localStorage` is Save-Data
+  backed, which needs a selected user profile and a save-data mount;
+  launched from the homebrew menu it can silently no-op, so every
+  launch started from empty credentials. The config's primary store is
+  now `sdmc:/switch/rommmate/config.json` (read/written synchronously —
+  `fs.ts` grows `readTextSync`/`writeTextSync`), with `localStorage`
+  kept as a second copy: the preview's only store, and the migration
+  source for a device that did manage to save (promoted to the SD on
+  first load). Either store alone boots. Failures log to
+  `rommate.log` instead of vanishing. (`tools/configtest.ts`.)
+- **The disc number survives partial walks** — a favourite or
+  collection holds *some* discs of a release, and the disc picker only
+  opened when ≥ 2 had arrived: the tile badge said "1/4" while the
+  detail screen showed no disc at all. The detail's Disc row now comes
+  from a game-id → release-position map built from the full library's
+  titles (`discInfo` in `App.tsx`), so it shows "Disc N of M" on every
+  path; `group.ts` tie-breaks equal `sort_comparator`s by id (insertion
+  order differs per walk and renumbered discs) and adopts a release-wide
+  comparator for an arrived disc whose own is only known to the other
+  discs' sibling lists; the picker labels rows by release slot
+  (`Disc 2`, not row 2) and counts the whole release.
+  (`tools/grouptest.ts`.)
+
+### Measured (live 5.4.0 server, 1266 roms)
+
+| | v13 walk | v14 stream |
+|---|---|---|
+| requests | 13 pages + auth + meta | 1 (+1 preflight) |
+| payload | 27.5 MB across pages | 27.5 MB, parsed incrementally |
+| `JSON.parse` spikes | 13 × ~2 MB | none (per-item) |
+| appends / row re-sorts mid-walk | 13 | 0 (one commit at the end) |
+| covers fetched mid-walk for soon-replaced tiles | every reshuffle | none |
+| boot UI | blank until page 1, then popping | instant (cache), covers in background |
+| cover jobs at boot | all visible rows × 9 | visible column × rows, ≤ 2 in flight |
+

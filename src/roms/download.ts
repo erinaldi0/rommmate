@@ -66,6 +66,19 @@ export interface DownloadItem {
 /** How often the badge label is allowed to change (a % step). */
 const PROGRESS_STEP_MS = 250;
 
+/** Join staged stream chunks into one buffer for a single SD write. */
+function concatChunks(parts: Uint8Array[]): Uint8Array {
+	let total = 0;
+	for (const p of parts) total += p.length;
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const p of parts) {
+		out.set(p, offset);
+		offset += p.length;
+	}
+	return out;
+}
+
 /**
  * A one-item view for the UI: the mutable item plus its completion, so
  * the queue screen can paint a progress bar without reading internals.
@@ -295,11 +308,31 @@ class DownloadQueue {
 
 			let received = 0;
 			const reader = body.getReader();
+			/**
+			 * Batching accumulator. The stream tends to hand us many small
+			 * chunks per second, and every `appendFileSync` is a synchronous
+			 * system call on the main thread — one per chunk starves the
+			 * frame loop even though each call is short. Coalescing into
+			 * ~256 KiB writes cuts the call count roughly 10x with no effect
+			 * on resume semantics (the .part grows in whole chunks either way).
+			 */
+			let staged: Uint8Array[] = [];
+			let pending = 0;
+			const FLUSH = 256 * 1024;
+			const flush = async () => {
+				if (staged.length === 0) return;
+				const batch = staged.length === 1 ? staged[0] : concatChunks(staged);
+				staged = [];
+				pending = 0;
+				await appendBinary(part, batch);
+			};
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (done) break;
 				if (value === undefined) continue;
-				await appendBinary(part, value);
+				staged.push(value);
+				pending += value.length;
+				if (pending >= FLUSH) await flush();
 				received += value.length;
 				item.transferred = rangeStart + received;
 				// Throttled: the badge repaints at most every 250 ms.
@@ -314,6 +347,7 @@ class DownloadQueue {
 					);
 				}
 			}
+			await flush();
 			if (controller.signal.aborted) return 'cancelled';
 
 			// ── verify ────────────────────────────────────────────────────

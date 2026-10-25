@@ -143,7 +143,6 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 									y={y + 2}
 									fontFamily={fontFamily}
 									fontSize={fontSize.small}
-									fontWeight="bold"
 									fill={row.ok ? colors.success : colors.warning}
 								>
 									{row.ok ? '✓' : '!'}
@@ -208,7 +207,6 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 							y={actionY + 14}
 							fontFamily={fontFamily}
 							fontSize={fontSize.body}
-							fontWeight="bold"
 							fill={focused ? colors.textPrimary : colors.textSecondary}
 							textAlign="center"
 						>

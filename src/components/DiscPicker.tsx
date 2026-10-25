@@ -83,7 +83,7 @@ export function DiscPicker({ title, initial, onPick, onClose }: Props) {
 			{/* Opaque backdrop: the grid behind must not compete for input. */}
 			<Rect width={dims.width} height={dims.height} fill={colors.bg} />
 
-			<Header title={name} subtitle={`${count} discs`} build={BUILD_ID} />
+			<Header title={name} subtitle={`${title.knownDiscs} discs`} build={BUILD_ID} />
 
 			<Rect
 				x={panelX}
@@ -130,7 +130,9 @@ export function DiscPicker({ title, initial, onPick, onClose }: Props) {
 							fontSize={fontSize.small}
 							fill={isFocus ? colors.accent : colors.textFaint}
 						>
-							{`Disc ${i + 1}`}
+							{/* The release's disc number (a partial walk still
+						    counts the whole release), not the row's position. */}
+						{`Disc ${title.discReleaseSlots[i] ?? i + 1}`}
 						</Text>
 						<Text
 							x={panelX + 120}

@@ -193,6 +193,36 @@ export async function writeText(path: string, text: string): Promise<void> {
 	await writeBinary(path, new TextEncoder().encode(text));
 }
 
+/**
+ * Read a file synchronously as UTF-8 text — device only (the preview's
+ * in-memory tree has no synchronous surface); null when absent or
+ * off-device. For the tiny files a boot cannot wait on (the config).
+ */
+export function readTextSync(path: string): string | null {
+	if (!isSwitch()) return null;
+	try {
+		const buf = Switch!.readFileSync!(path);
+		return buf === null ? null : new TextDecoder().decode(buf);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Write a file synchronously as UTF-8 text — device only, no-op
+ * off-device. False when the write failed: the caller decides what the
+ * session is worth without the file.
+ */
+export function writeTextSync(path: string, text: string): boolean {
+	if (!isSwitch()) return false;
+	try {
+		Switch!.writeFileSync!(path, text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** True when the path exists (file or directory). */
 export async function exists(path: string): Promise<boolean> {
 	if (isSwitch()) {
@@ -278,9 +308,20 @@ export async function remove(path: string): Promise<void> {
 	walk(segs.slice(0, -1).join('/'), false)?.children?.delete(segs[segs.length - 1] ?? path);
 }
 
-/** Move/rename a file or directory. Throws when the source is absent. */
+/**
+ * Move/rename a file or directory. Throws when the source is absent.
+ *
+ * Horizon's `renameSync` has no overwrite semantics: renaming onto an
+ * existing destination fails with "File exists" (POSIX replace() is not
+ * exposed). Removing the destination first gives the POSIX contract the
+ * callers below expect — the old file is replaced by the new one — at
+ * the cost of a wider non-atomic window than a true swap (acceptable:
+ * every caller here just moved a fully-written temp file over its own
+ * previous output).
+ */
 export async function move(src: string, dest: string): Promise<void> {
 	if (isSwitch()) {
+		await remove(dest);
 		Switch!.renameSync!(src, dest);
 		return;
 	}

@@ -20,6 +20,8 @@
  *   picker      the multi-disc chooser
  *   downloads   the download queue (the Play feature's transfers)
  *   doctor      the Play setup doctor
+ *   design      the design-system showcase (every src/components/ui atom)
+ *   states      the empty / loading / error states
  *
  * Credentials (query parameters):
  *   seed=1      pre-fills the settings form with a fake instance + token
@@ -57,6 +59,9 @@ import { coverCacheSize, hasCover, resolveCover } from '../../src/covers';
 import { MOCK_GAMES, MOCK_COLLECTIONS } from '../../src/mock';
 import { colors } from '../../src/theme';
 import { groupTitles, type RommGame } from '../../src/romm';
+import type { RommTitle } from '../../src/romm';
+import { DiscPicker } from '../../src/components/DiscPicker';
+import { DesignShowcase, StatesBand } from './design';
 
 installErrorTrap();
 
@@ -326,11 +331,41 @@ function syntheticCover(game: RommGame, w: number, h: number): string {
  */
 const coverOverride = params.get('cover');
 
-const ART_GAMES: RommGame[] = MOCK_GAMES.map((g) => ({
-	...g,
-	coverUrl: coverOverride ?? syntheticCover(g, 216, 288),
-	screenshotUrl: syntheticCover(g, 320, 180),
-}));
+const ART_GAMES: RommGame[] = (() => {
+	// The mock's games carry no platform ids, so the platforms strip could
+	// never match a logo. The preview assigns one id per platform name and
+	// builds the matching platform entries — the on-device shapes, with
+	// synthetic logos.
+	const ids = new Map<string, number>();
+	return MOCK_GAMES.map((g) => {
+		let id = ids.get(g.platform);
+		if (id === undefined) {
+			id = ids.size + 1;
+			ids.set(g.platform, id);
+		}
+		return {
+			...g,
+			platformId: id,
+			coverUrl: coverOverride ?? syntheticCover(g, 216, 288),
+			screenshotUrl: syntheticCover(g, 320, 180),
+		};
+	});
+})();
+
+/** The preview platforms, id-matched to `ART_GAMES`, logos synthetic. */
+const ART_PLATFORMS: RommPlatform[] = (() => {
+	const seen = new Map<string, RommPlatform>();
+	let id = 0;
+	for (const g of ART_GAMES) {
+		let p = seen.get(g.platform);
+		if (p === undefined) {
+			p = { id: ++id, name: g.platform, logoUrl: syntheticCover({ ...g, name: g.platform }, 48, 48), romCount: 0 };
+			seen.set(g.platform, p);
+		}
+		p.romCount += 1;
+	}
+	return [...seen.values()];
+})();
 
 /**
  * The library and the detail screen, wired the way `App.tsx` wires them —
@@ -344,6 +379,28 @@ function PreviewApp({
 	initialQuery?: string;
 }) {
 	const [detail, setDetail] = useState<RommGame | null>(null);
+	const [detailDisc, setDetailDisc] = useState<{ index: number; count: number } | null>(null);
+	const [picker, setPicker] = useState<RommTitle | null>(null);
+
+	// The release position of every multi-disc game — the same derivation
+	// the real App uses for the detail screen's Disc row.
+	const titles = useMemo(() => groupTitles(ART_GAMES), []);
+	const discInfo = useMemo(() => {
+		const m = new Map<number, { index: number; count: number }>();
+		for (const t of titles) {
+			if (t.knownDiscs <= 1) continue;
+			t.discs.forEach((g, i) => {
+				const slot = t.discReleaseSlots[i] ?? i + 1;
+				m.set(g.id, { index: slot - 1, count: t.knownDiscs });
+			});
+		}
+		return m;
+	}, [titles]);
+
+	function openDetail(game: RommGame, disc?: { index: number; count: number }) {
+		setDetailDisc(disc ?? discInfo.get(game.id) ?? null);
+		setDetail(game);
+	}
 
 	return (
 		<>
@@ -352,18 +409,38 @@ function PreviewApp({
 				status={`Demo mode — ${ART_GAMES.length} mock games`}
 				demo
 				onBack={() => {}}
-				onOpen={(g) => {
-					log.push(`open:${g.name}`);
+				onPickDisc={(t) => {
+					log.push(`pick:${t.name}`);
 					flush();
-					setDetail(g);
+					setPicker(t);
 				}}
-				paused={detail !== null}
+				onOpen={openDetail}
+				paused={detail !== null || picker !== null}
 				initialZone={initialZone}
 				initialQuery={initialQuery}
 				initialPlatform={params.get('platform') ?? ''}
 			/>
+			{picker !== null && (
+				<DiscPicker
+					title={picker}
+					initial={picker.mainIndex}
+					onPick={(index) => {
+						const disc = picker.discs[index];
+						setPicker(null);
+						if (disc !== undefined) {
+							openDetail(disc, discInfo.get(disc.id) ?? { index, count: picker.knownDiscs });
+						}
+					}}
+					onClose={() => setPicker(null)}
+				/>
+			)}
 			{detail !== null && (
-				<GameDetail key={detail.id} game={detail} onBack={() => setDetail(null)} />
+				<GameDetail
+					key={detail.id}
+					game={detail}
+					disc={detailDisc ?? undefined}
+					onBack={() => setDetail(null)}
+				/>
 			)}
 		</>
 	);
@@ -396,6 +473,9 @@ function SpinnerView() {
 function SectionsView() {
 	const titles = useMemo(() => groupTitles(ART_GAMES), []);
 	const favTitles = useMemo(() => groupTitles(ART_GAMES.filter((g) => g.favorite)), []);
+	// The platforms strip's input: the mock platform entries, id-matched
+	// to the games (built beside `ART_GAMES`).
+	const platforms = ART_PLATFORMS;
 	return (
 		<LibrarySections
 			status={`Demo mode — ${ART_GAMES.length} mock games`}
@@ -403,6 +483,7 @@ function SectionsView() {
 			demo
 			titles={titles}
 			favoriteTitles={favTitles}
+			platforms={platforms}
 			collections={MOCK_COLLECTIONS}
 			discSelections={{}}
 			onOpenTitle={(t) => {
@@ -411,6 +492,14 @@ function SectionsView() {
 			}}
 			onOpenSection={(s) => {
 				log.push(`section:${s.kind}`);
+				flush();
+			}}
+			onOpenDetail={(g) => {
+				log.push(`detail:${g.name}`);
+				flush();
+			}}
+			onSelectDisc={(key, index) => {
+				log.push(`disc:${key}:${index}`);
 				flush();
 			}}
 			onBack={() => {}}
@@ -488,6 +577,13 @@ if (view === 'demo' || view === 'filter' || view === 'empty') {
 	renderApp(<DownloadsView />);
 } else if (view === 'doctor') {
 	renderApp(<DoctorView />);
+} else if (view === 'design') {
+	// The design-system showcase: every primitive in src/components/ui on the
+	// real 1280×720 canvas (surfaces, type, actions, covers, focus, metadata).
+	renderApp(<DesignShowcase />);
+} else if (view === 'states') {
+	// The empty / loading / error states, one per third of the screen.
+	renderApp(<StatesBand />);
 } else {
 	renderApp(<App />);
 }

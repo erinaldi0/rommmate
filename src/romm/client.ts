@@ -26,7 +26,26 @@ import {
 	modernQuery,
 	parsePage,
 } from './dialect';
+import { ItemStream, utf8IncompleteTail } from './stream';
 import type { GetGamesOptions, RommCollection, RommGame, RommPlatform, RommSibling } from './types';
+
+/**
+ * The largest page a modern (5.x) server answers with, per its own API
+ * bounds. A library larger than this continues in a follow-up request
+ * offset past what has been read.
+ */
+const STREAM_LIMIT_CAP = 10000;
+
+/** How many streamed rounds may follow one another (the safety cap). */
+const STREAM_MAX_ROUNDS = 50;
+
+/** Concatenate two byte arrays into one (small: held-back UTF-8 tail + chunk). */
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+	const out = new Uint8Array(a.length + b.length);
+	out.set(a, 0);
+	out.set(b, a.length);
+	return out;
+}
 
 /**
  * Normalise a user-typed instance URL: trim, strip trailing slashes, and
@@ -729,6 +748,185 @@ export class RommClient {
 		// kept, but the count is not the whole library.
 		if (!exhausted) truncated = true;
 
+		return { games, error: null, truncated };
+	}
+
+	/**
+	 * Fetch the user's whole game/ROM list in ONE request, streaming the
+	 * response body instead of materialising it.
+	 *
+	 * A modern server honours a page-size cap of 10000, so a whole library
+	 * fits one answer — but that answer is tens of megabytes of JSON, far
+	 * beyond what the heap may `res.json()` at once (the paged walk's
+	 * thirteen 2 MB parses were themselves a memory-churn problem). So
+	 * the body is read chunk by chunk and fed through `ItemStream`, which
+	 * hands back each rom object as soon as it completes: the heap holds
+	 * one rom at a time, and the caller can persist each one as it
+	 * arrives.
+	 *
+	 * A tiny preflight (`limit=1`) reports the dialect and the library's
+	 * total — the total lets the UI show a percentage, and a ≤4.x server
+	 * (which caps its pages) falls back to the paged `getGames` walk, as
+	 * does a runtime without a streamable response body.
+	 *
+	 * Batches are flushed to `onBatch` at most every 250 ms / 25 games, so
+	 * the UI re-renders a handful of times for the whole walk instead of
+	 * once per page.
+	 *
+	 * @returns the parsed games, a human-readable error, and whether the
+	 *          library was larger than what the rounds could read.
+	 */
+	async getGamesStream(
+		onBatch: (batch: RommGame[]) => void,
+		onProgress?: (loaded: number, total: number | null) => void,
+		signal?: AbortSignal,
+		options?: GetGamesOptions,
+	): Promise<{ games: RommGame[]; error: string | null; truncated: boolean }> {
+		const extra = filterQuery(options);
+
+		// Preflight: one rom, for the dialect and the total.
+		const pre = await this.#fetchPage(modernQuery(1, 0, extra), signal);
+		if ('error' in pre) {
+			return signal?.aborted
+				? { games: [], error: 'cancelled', truncated: false }
+				: { games: [], error: pre.error, truncated: false };
+		}
+		const prePage = parsePage(pre.json);
+		if (prePage === null) {
+			return { games: [], error: 'unexpected response shape from /api/roms', truncated: false };
+		}
+		if (!prePage.modern) {
+			// ≤4.x caps its page size — one big request cannot work.
+			return this.getGames(onBatch, onProgress, signal, options);
+		}
+		const grandTotal = prePage.total;
+
+		const games: RommGame[] = [];
+		const seen = new Set<string>();
+		let batch: RommGame[] = [];
+		let lastFlush = Date.now();
+
+		/** Parse one raw item; dedupe against everything seen so far. */
+		const addRaw = (raw: string): void => {
+			let entry: unknown;
+			try {
+				entry = JSON.parse(raw);
+			} catch {
+				return;
+			}
+			const game = this.#parseRom(entry);
+			if (game === null) return;
+			const key =
+				game.id > 0
+					? `id:${game.id}`
+					: `s:${game.name}|${game.platform}|${game.summary.slice(0, 32)}`;
+			if (seen.has(key)) return;
+			seen.add(key);
+			games.push(game);
+			batch.push(game);
+		};
+
+		/** Hand the pending batch to the UI — at most ~4 times a second. */
+		const flush = (force = false): void => {
+			if (batch.length === 0) return;
+			if (!force && batch.length < 25 && Date.now() - lastFlush < 250) return;
+			const out = batch;
+			batch = [];
+			lastFlush = Date.now();
+			onBatch(out);
+			onProgress?.(games.length, grandTotal);
+		};
+
+		// An empty library still owes the UI its first (empty) batch — the
+		// moment the route switches and the empty state shows.
+		if (grandTotal === 0) {
+			onBatch([]);
+			onProgress?.(0, 0);
+		}
+
+		// The rounds: one streamed request per full page of up to
+		// STREAM_LIMIT_CAP roms. A server that caps the request below the
+		// remaining count (its echoed `limit` says so) simply gets more
+		// rounds; overlap between them deduplicates away.
+		let read = 0; // items consumed from the server (offset of the next round)
+		let rounds = 0;
+		let truncated = false;
+		let failure: string | null = null;
+		while (rounds < STREAM_MAX_ROUNDS && !signal?.aborted) {
+			if (grandTotal !== null && read >= grandTotal) break;
+			const remaining = grandTotal !== null ? grandTotal - read : Infinity;
+			const limit = Math.min(Math.max(Math.ceil(remaining), 1), STREAM_LIMIT_CAP);
+			const res = await this.#request(`/api/roms?${modernQuery(limit, read, extra)}`, {}, signal);
+			if (!res.ok) {
+				failure = `HTTP ${res.status} from /api/roms`;
+				break;
+			}
+			const body = res.body;
+			if (body === null || typeof body.getReader !== 'function') {
+				// A runtime without a streamable body cannot take this path.
+				return this.getGames(onBatch, onProgress, signal, options);
+			}
+
+			const reader = body.getReader();
+			const decoder = new TextDecoder();
+			const scanner = new ItemStream();
+			/** Bytes of an incomplete UTF-8 sequence, carried to the next chunk. */
+			let pending: Uint8Array | null = null;
+			let roundItems = 0;
+			try {
+				for (;;) {
+					const chunk = await reader.read();
+					if (chunk.done) break;
+					const value = chunk.value;
+					if (value === undefined || value.byteLength === 0) continue;
+					// A multi-byte character may straddle the chunk edge:
+					// its bytes are held back and prepended to the next
+					// chunk, so nothing is ever dropped or mangled.
+					const bytes: Uint8Array = pending !== null ? concatBytes(pending, value) : value;
+					const tail = utf8IncompleteTail(bytes);
+					if (tail >= bytes.byteLength) {
+						pending = bytes;
+						continue;
+					}
+					pending = tail > 0 ? bytes.slice(bytes.byteLength - tail) : null;
+					const usable = tail > 0 ? bytes.subarray(0, bytes.byteLength - tail) : bytes;
+					for (const raw of scanner.push(decoder.decode(usable))) {
+						roundItems += 1;
+						addRaw(raw);
+					}
+					if (signal?.aborted) break;
+					flush();
+				}
+				// A stream that ends mid-sequence: decode what is left
+				// (a replacement character beats losing the tail item).
+				if (pending !== null && !signal?.aborted) {
+					for (const raw of scanner.push(decoder.decode(pending))) {
+						roundItems += 1;
+						addRaw(raw);
+					}
+				}
+			} catch (err) {
+				if (!signal?.aborted) failure = `cannot reach RomM (${String(err)})`;
+			}
+			// Flush the scanner's tail (empty on a clean response).
+			for (const raw of scanner.push('')) {
+				roundItems += 1;
+				addRaw(raw);
+			}
+			flush(true);
+			read += roundItems;
+			rounds += 1;
+			if (signal?.aborted) break;
+			// A round that reads nothing is a server that will not advance.
+			if (roundItems === 0) {
+				if (grandTotal !== null && read < grandTotal) truncated = true;
+				break;
+			}
+		}
+
+		if (signal?.aborted) return { games, error: 'cancelled', truncated: false };
+		if (failure !== null) return { games, error: failure, truncated: rounds > 0 };
+		if (grandTotal !== null && read < grandTotal) truncated = true;
 		return { games, error: null, truncated };
 	}
 }
