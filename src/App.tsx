@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hasConfig, loadConfig, saveConfig, DEFAULT_AUTH_METHOD, type Config } from './config';
-import { exchangePasswordToken, exchangePairingCode, refreshAccessToken } from './auth';
+import { buildClient, ensureToken, type SessionContext } from './session';
 import { configureCovers } from './covers';
 import { setActivity } from './activity';
 import { onFatalError } from './errors';
@@ -83,13 +83,6 @@ export function App() {
 	/** The in-flight collection walk, with the same generation discipline. */
 	const colGen = useRef(0);
 	const colAborter = useRef<AbortController | null>(null);
-	/**
-	 * The refresh-token exchange in flight, if any: several requests can
-	 * 401 together when the access token expires mid-walk, and only one
-	 * refresh may run (RomM rotates refresh tokens — a second, parallel
-	 * exchange would race the first and invalidate it).
-	 */
-	const refreshInFlight = useRef<Promise<string | null> | null>(null);
 
 	// Anything that blows up while rendering is surfaced on screen instead of
 	// leaving a half-drawn frame behind.
@@ -150,125 +143,26 @@ export function App() {
 			setCfg(cur);
 		};
 
-		// --- Obtain the bearer token for the chosen sign-in method -----
-		if (method === 'password') {
-			const username = (cur.username ?? '').trim();
-			const password = cur.password ?? '';
-			if (username === '' || password === '') {
-				setBusy(false);
-				setStatus('Connection failed: username and password are required');
-				return;
-			}
-			const refresh = (cur.refreshToken ?? '').trim();
-			const fresh = cur.token.trim() !== '' && (cur.tokenExpiresAt ?? 0) > Date.now() + 60_000;
-			if (!fresh) {
-				setStatus(refresh !== '' ? 'Refreshing session…' : 'Signing in…');
-				let res =
-					refresh !== ''
-						? await refreshAccessToken(cur.baseUrl, refresh, controller.signal)
-						: await exchangePasswordToken(cur.baseUrl, username, password, controller.signal);
-				if (gen !== runGen.current) return;
-				if (!res.ok && refresh !== '') {
-					// A rotated or revoked refresh token: fall back to the
-					// full password grant once.
-					setStatus('Signing in…');
-					log('token', 'refresh token dead — retrying with the password grant');
-					res = await exchangePasswordToken(cur.baseUrl, username, password, controller.signal);
-					if (gen !== runGen.current) return;
-				}
-				if (!res.ok) {
-					setBusy(false);
-					setStatus(`Connection failed: ${friendlyNetworkError(res.error)}`);
-					log('error', `password grant: ${res.error}`);
-					return;
-				}
-				log('token', 'password grant ok');
-				apply({
-					token: res.value.accessToken,
-					refreshToken: res.value.refreshToken,
-					tokenExpiresAt: Date.now() + res.value.expiresIn * 1000,
-				});
-			}
-		} else if (method === 'pairing') {
-			const code = (cur.pairingCode ?? '').trim();
-			if (code === '') {
-				setBusy(false);
-				setStatus('Connection failed: a pairing code is required');
-				return;
-			}
-			// A pairing token from a previous exchange is reused; the code
-			// itself is single-use, so only exchange when we hold none yet.
-			if (cur.token.trim() === '' || (cur.pairingToken ?? '').trim() === '') {
-				setStatus('Exchanging pairing code…');
-				const res = await exchangePairingCode(cur.baseUrl, code, controller.signal);
-				if (gen !== runGen.current) return;
-				if (!res.ok) {
-					setBusy(false);
-					setStatus(`Connection failed: ${friendlyNetworkError(res.error)}`);
-					log('error', `pairing exchange: ${res.error}`);
-					return;
-				}
-				if (res.value.rawToken === '') {
-					setBusy(false);
-					setStatus('Connection failed: server returned no token for the code');
-					log('error', 'pairing exchange: server returned an empty token');
-					return;
-				}
-				log('token', 'pairing exchange ok');
-				apply({ token: res.value.rawToken, pairingToken: res.value.rawToken });
-			}
-		}
-
-		// --- 401 recovery for the client -------------------------------
-		// Password: refresh the access token (deduped — the walk fires
-		// pages in parallel and several can 401 at once). Pairing: re-run
-		// the code exchange (a stored pairing token can expire). The plain
-		// API-token method has nothing to refresh.
-		const onRefresh = async (): Promise<string | null> => {
-			if (method === 'password') {
-				const refresh = (cur.refreshToken ?? '').trim();
-				if (refresh === '') return null;
-				if (refreshInFlight.current !== null) return refreshInFlight.current;
-				refreshInFlight.current = (async () => {
-					const res = await refreshAccessToken(cur.baseUrl, refresh, controller.signal);
-					if (!res.ok) {
-						log('error', `refresh: ${res.error}`);
-						return null;
-					}
-					log('token', 'refreshed access token');
-					apply({
-						token: res.value.accessToken,
-						refreshToken: res.value.refreshToken,
-						tokenExpiresAt: Date.now() + res.value.expiresIn * 1000,
-					});
-					return res.value.accessToken;
-				})();
-				try {
-					return await refreshInFlight.current;
-				} finally {
-					refreshInFlight.current = null;
-				}
-			}
-			if (method === 'pairing') {
-				const code = (cur.pairingCode ?? '').trim();
-				if (code === '') return null;
-				const res = await exchangePairingCode(cur.baseUrl, code, controller.signal);
-				if (!res.ok) {
-					log('error', `pairing re-exchange: ${res.error}`);
-					return null;
-				}
-				if (res.value.rawToken === '') {
-					log('error', 'pairing re-exchange: server returned an empty token');
-					return null;
-				}
-				log('token', 're-exchanged pairing code after 401');
-				apply({ token: res.value.rawToken, pairingToken: res.value.rawToken });
-				return res.value.rawToken;
-			}
-			return null;
+		// --- Token + client --------------------------------------------
+		// Token acquisition (password grant, refresh fallback, pairing
+		// exchange) and the client's 401 recovery live in session.ts;
+		// the result is the same authenticated client as before.
+		const session: SessionContext = {
+			signal: controller.signal,
+			isStale: () => gen !== runGen.current,
+			applyConfig: apply,
+			setStatus,
 		};
 
-		const client = new RommClient(cur.baseUrl, cur.token, onRefresh);
+		const ensured = await ensureToken(cur, session);
+		if (gen !== runGen.current) return;
+		if (!ensured.ok) {
+			setBusy(false);
+			setStatus(`Connection failed: ${friendlyNetworkError(ensured.error)}`);
+			return;
+		}
+
+		const client = buildClient(() => cur, session);
 		clientRef.current = client;
 
 		const authErr = await client.authenticate(controller.signal);

@@ -15,7 +15,16 @@ import { prefetchCovers, type CoverRequest } from '../covers';
 import { BUILD_ID } from '../version';
 import { colors } from '../theme';
 import { CoverFocusRing, CoverTile, TITLE_BLOCK_H } from './CoverTile';
-import { FilterBar, type FilterChip } from './FilterBar';
+import { FilterBar } from './FilterBar';
+import {
+	ALL_KEY,
+	SEARCH_KEY,
+	activeChipIndex,
+	buildFilterChips,
+	filterTitles,
+	shownDisc,
+	type FilterChip,
+} from '../lib/library-filters';
 import { Header } from './Header';
 import { HintBar, HintBarBackdrop } from './HintBar';
 import { EmptyState } from './EmptyState';
@@ -32,11 +41,6 @@ const TILE_H = COVER_H + TITLE_BLOCK_H + 20;
 /** Where the scrolling grid starts and ends. */
 const VIEW_Y = 140;
 const VIEW_H = 508;
-
-/** Chip that opens the search keyboard. */
-const SEARCH_KEY = '__search';
-/** Chip that clears the platform filter. */
-const ALL_KEY = '__all';
 
 type Zone = 'grid' | 'filter';
 
@@ -73,14 +77,6 @@ interface Props {
 	initialPlatform?: string;
 }
 
-/** A disc to show for a title: the player's choice, else the main disc. */
-function shownDisc(t: RommTitle, selections: Record<number, number>): RommGame {
-	const i = selections[t.key] ?? t.mainIndex;
-	const clamped = Math.min(Math.max(0, i), t.discs.length - 1);
-	// `discs` is never empty for a grouped title (groupTitles guarantees it).
-	return t.discs[clamped] ?? t.discs[0] as RommGame;
-}
-
 const NO_SELECTIONS: Record<number, number> = {};
 
 export function LibraryGrid({
@@ -111,9 +107,8 @@ export function LibraryGrid({
 	const [scrollTop, setScrollTop] = useState(initialScroll);
 
 	// ── filtering ──────────────────────────────────────────────────────────
-	// The search matches the title name only: platforms have their own
-	// chips, and a fuzzy two-axis search would be harder to predict than
-	// it is useful.
+	// The rules (what the search matches, how the chips count, which chip
+	// is active) live in lib/library-filters; the screen applies the results.
 
 	const needle = query.trim().toLowerCase();
 
@@ -122,50 +117,12 @@ export function LibraryGrid({
 	// titles, not raw roms.
 	const allTitles = useMemo(() => groupTitles(games), [games]);
 
-	const searched = useMemo(
-		() =>
-			needle === '' ? allTitles : allTitles.filter((t) => t.name.toLowerCase().includes(needle)),
-		[allTitles, needle],
-	);
+	const visible = useMemo(() => filterTitles(allTitles, query, platform), [allTitles, query, platform]);
 
-	const visible = useMemo(
-		() => (platform === '' ? searched : searched.filter((t) => t.platform === platform)),
-		[searched, platform],
-	);
-
-	// Platform names, in a stable order, with the counts of the titles that
-	// the *search* leaves behind (so the two filters compose).
-	const platformNames = useMemo(() => {
-		const names = new Set<string>();
-		for (const t of allTitles) if (t.platform !== '') names.add(t.platform);
-		return Array.from(names).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-	}, [allTitles]);
-
-	const chips: FilterChip[] = useMemo(() => {
-		const out: FilterChip[] = [
-			{
-				key: SEARCH_KEY,
-				label: needle === '' ? 'Search' : `Search: ${query.trim()}`,
-				active: needle !== '',
-			},
-			{ key: ALL_KEY, label: 'All', count: searched.length, active: platform === '' },
-		];
-		for (const name of platformNames) {
-			out.push({
-				key: name,
-				label: name,
-				count: searched.filter((t) => t.platform === name).length,
-				active: platform === name,
-			});
-		}
-		return out;
-	}, [needle, query, searched, platform, platformNames]);
+	const chips = useMemo(() => buildFilterChips(allTitles, query, platform), [allTitles, query, platform]);
 
 	/** The chip that should own the focus when the bar is entered. */
-	const activeChip = useMemo(() => {
-		const i = chips.findIndex((c) => c.active && c.key !== SEARCH_KEY && c.key !== ALL_KEY);
-		return i >= 0 ? i : 1;
-	}, [chips]);
+	const activeChip = useMemo(() => activeChipIndex(chips), [chips]);
 
 	// ── layout ────────────────────────────────────────────────────────────
 

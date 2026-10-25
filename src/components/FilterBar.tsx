@@ -2,16 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Rect, Text, useDimensions, useParent } from 'react-tela';
 import { colors, fontFamily, fontSize, radius, space } from '../theme';
 import { measure, truncate, type TextContext } from '../text';
-
-export interface FilterChip {
-	/** Stable identity of the chip. */
-	key: string;
-	label: string;
-	/** How many games this chip matches. Omitted when it means nothing. */
-	count?: number;
-	/** True when this chip is the applied filter. */
-	active: boolean;
-}
+import type { FilterChip } from '../lib/library-filters';
 
 interface Props {
 	items: FilterChip[];
