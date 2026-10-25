@@ -60,7 +60,7 @@ interface Props {
 /** Where the rows live. */
 const AREA_Y = 108;
 /** How tall one row is: header + cover + two text lines. */
-const ROW_H = 224;
+const ROW_H = 232;
 /** The rows' viewport — the hint bar owns the bottom of the screen. */
 const AREA_H = 560;
 /** Left margin: the header and the covers share it (the RomM web layout). */
@@ -394,15 +394,22 @@ export function LibrarySections({
 		// The header: the row's name and its count, above the covers —
 		// the RomM web UI's section header. It is the row's focus target:
 		// left from the first cover lands on it, and A opens the row.
+		//
+		// `textBaseline="alphabetic"`: react-tela defaults to "top", which
+		// anchors the *line box* — its height depends on the font, and the
+		// device font's ascent is tall enough to push the glyphs into the
+		// covers below. Baseline anchoring is font-stable, so the same
+		// layout holds on the box and in the preview.
 		const labelW = measure(ctx, r.label, fontSize.body);
 		const countW = measure(ctx, r.countLabel, fontSize.tiny);
 		rowTiles.push(
 			<Text
 				key={`${r.id}-label`}
 				x={MARGIN_X}
-				y={rowY + 18}
+				y={rowY + 22}
 				fontFamily={fontFamily}
 				fontSize={fontSize.body}
+				textBaseline="alphabetic"
 				fill={rowFocused && focusSel < 0 ? colors.textPrimary : colors.textSecondary}
 			>
 				{r.label}
@@ -410,17 +417,18 @@ export function LibrarySections({
 			<Text
 				key={`${r.id}-count`}
 				x={MARGIN_X + labelW + 10}
-				y={rowY + 18}
+				y={rowY + 22}
 				fontFamily={fontFamily}
 				fontSize={fontSize.tiny}
-				fill={colors.textFaint}
+				textBaseline="alphabetic"
+				fill={colors.textSecondary}
 			>
 				{r.countLabel}
 			</Text>,
 		);
 
-		// The covers.
-		const coverTop = rowY + 30;
+		// The covers, with real clearance below the header line.
+		const coverTop = rowY + 38;
 		const nameSize = 15;
 		const nameW = PITCH_X - 8;
 
@@ -450,9 +458,10 @@ export function LibrarySections({
 
 					<Text
 						x={x}
-						y={coverTop + COVER_H + 23}
+						y={coverTop + COVER_H + 18}
 						fontFamily={fontFamily}
 						fontSize={nameSize}
+						textBaseline="alphabetic"
 						fill={rowFocused && ti === focusSel ? colors.textPrimary : colors.textSecondary}
 						maxWidth={nameW}
 						overflow="ellipsis"
@@ -462,9 +471,10 @@ export function LibrarySections({
 					{t.sub !== '' && (
 						<Text
 							x={x}
-							y={coverTop + COVER_H + 43}
+							y={coverTop + COVER_H + 38}
 							fontFamily={fontFamily}
 							fontSize={12}
+							textBaseline="alphabetic"
 							fill={colors.textFaint}
 							maxWidth={nameW}
 							overflow="ellipsis"
@@ -482,9 +492,9 @@ export function LibrarySections({
 				<Rect
 					key={`ring-${r.id}-label`}
 					x={MARGIN_X - 8}
-					y={rowY - 6}
+					y={rowY + 2}
 					width={labelW + countW + 34}
-					height={34}
+					height={30}
 					stroke={colors.accent}
 					lineWidth={3}
 					borderRadius={radius.lg}
