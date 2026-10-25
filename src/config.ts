@@ -13,6 +13,8 @@ const KEY_TOKEN_EXPIRES_AT = 'rommate.tokenExpiresAt';
 const KEY_PAIRING_CODE = 'rommate.pairingCode';
 const KEY_PAIRING_TOKEN = 'rommate.pairingToken';
 const KEY_KEYBOARD = 'rommate.keyboard';
+const KEY_AUTO_SYNC = 'rommate.autoSync';
+const KEY_CORE_CHOICES = 'rommate.coreChoices';
 
 /**
  * Which keyboard opens for the text fields.
@@ -68,6 +70,18 @@ export interface Config {
 	pairingToken?: string;
 	/** Which keyboard opens for the text fields (default: built-in). */
 	keyboard?: KeyboardMode;
+	/**
+	 * Run the save sync automatically at boot (default: true). A pending
+	 * play session is always ingested; this gates only the sync that
+	 * follows it.
+	 */
+	autoSync?: boolean;
+	/**
+	 * Per-platform core picks: the platform slug → the core id from the
+	 * core map (see `retroarch/cores.ts`). Absent = the map's first
+	 * (recommended) choice.
+	 */
+	coreChoices?: Record<string, string>;
 }
 
 export function loadConfig(): Config {
@@ -75,6 +89,23 @@ export function loadConfig(): Config {
 		const ls = localStorage;
 		const keyboard = ls?.getItem(KEY_KEYBOARD);
 		const authMethod = ls?.getItem(KEY_AUTH_METHOD);
+		const autoSync = ls?.getItem(KEY_AUTO_SYNC);
+		const coreChoicesRaw = ls?.getItem(KEY_CORE_CHOICES) ?? '';
+		let coreChoices: Record<string, string> | undefined;
+		if (coreChoicesRaw !== '') {
+			try {
+				const parsed: unknown = JSON.parse(coreChoicesRaw);
+				if (typeof parsed === 'object' && parsed !== null) {
+					coreChoices = Object.fromEntries(
+						Object.entries(parsed as Record<string, unknown>)
+							.filter(([, v]) => typeof v === 'string')
+							.map(([k, v]) => [k, v as string]),
+					);
+				}
+			} catch {
+				coreChoices = undefined; // a corrupt pick degrades to the default
+			}
+		}
 		return {
 			baseUrl: ls?.getItem(KEY_BASE_URL) ?? '',
 			token: ls?.getItem(KEY_TOKEN) ?? '',
@@ -91,6 +122,9 @@ export function loadConfig(): Config {
 			keyboard: KEYBOARD_MODES.includes(keyboard as KeyboardMode)
 				? (keyboard as KeyboardMode)
 				: DEFAULT_KEYBOARD,
+			// The default is on: the stored value only matters when off.
+			autoSync: autoSync !== 'false',
+			coreChoices,
 		};
 	} catch {
 		return {
@@ -98,6 +132,7 @@ export function loadConfig(): Config {
 			token: '',
 			authMethod: DEFAULT_AUTH_METHOD,
 			keyboard: DEFAULT_KEYBOARD,
+			autoSync: true,
 		};
 	}
 }
@@ -126,6 +161,16 @@ export function saveConfig(cfg: Config): void {
 		localStorage?.setItem(KEY_PAIRING_CODE, sanitize(cfg.pairingCode ?? ''));
 		localStorage?.setItem(KEY_PAIRING_TOKEN, sanitize(cfg.pairingToken ?? ''));
 		localStorage?.setItem(KEY_KEYBOARD, cfg.keyboard ?? DEFAULT_KEYBOARD);
+		localStorage?.setItem(KEY_AUTO_SYNC, cfg.autoSync === false ? 'false' : 'true');
+		try {
+			localStorage?.setItem(
+				KEY_CORE_CHOICES,
+				cfg.coreChoices !== undefined ? JSON.stringify(cfg.coreChoices) : '',
+			);
+		} catch {
+			// The pick is the least-critical field: losing it costs one
+			// re-pick at most, not the session.
+		}
 	} catch {
 		// Save Data is unavailable (or full) — the session still works, the
 		// credentials just are not remembered across launches.

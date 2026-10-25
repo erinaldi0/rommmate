@@ -2,7 +2,7 @@
 /**
  * Bundle the app with esbuild and stamp a build identifier into it.
  *
- * The identifier (`v0.12-<git sha>[-dirty]-<UTC timestamp>`) is shown in the
+ * The identifier (`v0.13-<git sha>[-dirty]-<UTC timestamp>`) is shown in the
  * app header, so a screenshot is enough to tell exactly which build is
  * running on the device.
  */
@@ -24,7 +24,7 @@ const stamp = new Date()
 	.replace(/[-:]/g, '')
 	.replace(/\..+/, 'Z');
 
-const buildId = `v0.12-${sha}${dirty}-${stamp}`;
+const buildId = `v0.13-${sha}${dirty}-${stamp}`;
 
 await build({
 	entryPoints: ['src/main.tsx'],

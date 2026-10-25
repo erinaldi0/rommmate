@@ -16,15 +16,28 @@ import {
 import { log } from './log';
 import { networkStatus, friendlyNetworkError } from './network';
 import { MOCK_GAMES, MOCK_COLLECTIONS } from './mock';
+import { play } from './play';
+import { TOOLING_PLATFORM } from './retroarch/emulator';
 import { FatalError } from './components/FatalError';
 import { SettingsScreen } from './components/SettingsScreen';
 import { LibraryGrid } from './components/LibraryGrid';
 import { LibrarySections } from './components/LibrarySections';
 import { GameDetail } from './components/GameDetail';
 import { DiscPicker } from './components/DiscPicker';
+import { DownloadsScreen } from './components/DownloadsScreen';
+import { SetupDoctor } from './components/SetupDoctor';
 import { ActivityBadge } from './components/ActivityBadge';
 
-type Route = 'settings' | 'library' | 'detail';
+type Route = 'settings' | 'library' | 'detail' | 'downloads' | 'doctor';
+
+/**
+ * The user-created tooling platform (it holds the emulator, not games) is
+ * hidden from the library: its "roms" are the loader and core files the
+ * setup screens fetch from it.
+ */
+function isHiddenPlatform(name: string): boolean {
+	return name.trim().toLowerCase() === TOOLING_PLATFORM.toLowerCase();
+}
 
 export function App() {
 	const [cfg, setCfg] = useState<Config>(loadConfig);
@@ -185,7 +198,8 @@ export function App() {
 			.getGames(
 				(batch) => {
 					if (gen !== runGen.current) return;
-					if (batch.length > 0) setFavGames((prev) => [...prev, ...batch]);
+					const visible = batch.filter((g) => !isHiddenPlatform(g.platform));
+					if (visible.length > 0) setFavGames((prev) => [...prev, ...visible]);
 				},
 				() => {},
 				controller.signal,
@@ -198,7 +212,7 @@ export function App() {
 					setFavGames([]);
 					return;
 				}
-				setFavGames(fs);
+				setFavGames(fs.filter((g) => !isHiddenPlatform(g.platform)));
 			});
 
 		void client.getCollections(controller.signal).then(({ collections: cs, error }) => {
@@ -221,7 +235,7 @@ export function App() {
 				setPlatforms([]);
 				return;
 			}
-			setPlatforms(ps);
+			setPlatforms(ps.filter((p) => !isHiddenPlatform(p.name)));
 		});
 
 		setStatus('Loading library…');
@@ -231,7 +245,8 @@ export function App() {
 		const { games: gs, error, truncated } = await client.getGames(
 			(batch) => {
 				if (gen !== runGen.current) return;
-				if (batch.length > 0) setGames((prev) => [...prev, ...batch]);
+				const visible = batch.filter((g) => !isHiddenPlatform(g.platform));
+				if (visible.length > 0) setGames((prev) => [...prev, ...visible]);
 				if (!streamed) {
 					streamed = true;
 					setRoute('library');
@@ -273,14 +288,20 @@ export function App() {
 
 		// The walk finished: the canonical list replaces the streamed one,
 		// and the screen is left even when the library is empty.
-		log('library', `ok — ${gs.length} games${truncated ? ' (capped)' : ''}`);
-		setGames(gs);
+		const visible = gs.filter((g) => !isHiddenPlatform(g.platform));
+		log('library', `ok — ${visible.length} games${truncated ? ' (capped)' : ''}`);
+		setGames(visible);
 		setStatus(
-			gs.length > 0
-				? `Loaded ${gs.length} games${truncated ? ' (capped)' : ''}`
+			visible.length > 0
+				? `Loaded ${visible.length} games${truncated ? ' (capped)' : ''}`
 				: 'Library is empty',
 		);
 		setRoute('library');
+
+		// The Play service gets the live session: manifest load + the boot
+		// work (a pending play session, then the auto sync) runs behind
+		// the scenes while the user browses.
+		void play.bind(client, { ...cur }).then(() => void play.bootSync());
 	}, []);
 
 	/** Cancel the in-flight connection (B on the settings screen). */
@@ -314,6 +335,15 @@ export function App() {
 		setCfg(next);
 	}
 
+	/** Persist an auto-sync change (the settings screen's Play row). */
+	function changeAutoSync(on: boolean) {
+		const next = { ...cfg, autoSync: on };
+		saveConfig(next);
+		setCfg(next);
+		// The bound service keeps the new preference for its boot sync.
+		play.setConfig(next);
+	}
+
 	// Skip the login entirely: fill the library with mocked games so the app
 	// can be used (and the next screens developed) without a RomM server.
 	// A walk still running is abandoned so it cannot stomp the mock data.
@@ -323,6 +353,8 @@ export function App() {
 		setActivity('library', null);
 		setBusy(false);
 		setDemo(true);
+		// The Play service without a server: its rows go to "demo mode".
+		void play.bind(null, { ...cfg });
 		setGames(MOCK_GAMES);
 		setFavGames([]); // the dashboard falls back to the mock's favourite flag
 		setCollections(MOCK_COLLECTIONS);
@@ -454,6 +486,20 @@ export function App() {
 		setRoute('library');
 	}
 
+	/** Open the downloads queue (the Play feature's work, visible). */
+	function openDownloads() {
+		setRoute('downloads');
+	}
+
+	function closeDownloads() {
+		setRoute('library');
+	}
+
+	/** Open the Play setup doctor (from the settings screen). */
+	function openDoctor() {
+		setRoute('doctor');
+	}
+
 	// ── the dashboard's data ────────────────────────────────────────────────
 
 	const titles = useMemo(() => groupTitles(games), [games]);
@@ -464,6 +510,20 @@ export function App() {
 	const localFavTitles = useMemo(() => groupTitles(games.filter((g) => g.favorite)), [games]);
 	const favSource = favGames.length > 0 ? favTitles : localFavTitles;
 	const favSourceRaw = favGames.length > 0 ? favGames : games.filter((g) => g.favorite);
+
+	/**
+	 * The platforms actually present in the library (name + server id,
+	 * deduped) — the doctor checks the core/BIOS of these, not of every
+	 * platform the server happens to know.
+	 */
+	const doctorPlatforms = useMemo(() => {
+		const seen = new Map<string, { name: string; id: number }>();
+		for (const g of games) {
+			if (g.platform === '' || seen.has(g.platform)) continue;
+			seen.set(g.platform, { name: g.platform, id: g.platformId });
+		}
+		return [...seen.values()];
+	}, [games]);
 
 	/** The grid's slice for the open section, or null on the dashboard. */
 	const gridData = useMemo(() => {
@@ -509,18 +569,32 @@ export function App() {
 
 	if (fatal !== null) return <FatalError message={fatal} />;
 
-	if (route === 'settings') {
+	// The settings, doctor and downloads routes replace the whole screen
+	// (full-screen utility pages, in contrast to the detail overlay).
+	if (route === 'settings' || route === 'doctor' || route === 'downloads') {
 		return (
 			<>
-				<SettingsScreen
-					initial={cfg}
-					status={status}
-					busy={busy}
-					onSave={saveAndConnect}
-					onDemo={startDemo}
-					onCancel={cancelConnect}
-					onKeyboardChange={changeKeyboard}
-				/>
+				{route === 'doctor' ? (
+					<SetupDoctor
+						onBack={() => setRoute('settings')}
+						baseUrl={cfg.baseUrl}
+						platforms={doctorPlatforms}
+					/>
+				) : route === 'downloads' ? (
+					<DownloadsScreen onBack={closeDownloads} />
+				) : (
+					<SettingsScreen
+						initial={cfg}
+						status={status}
+						busy={busy}
+						onSave={saveAndConnect}
+						onDemo={startDemo}
+						onCancel={cancelConnect}
+						onKeyboardChange={changeKeyboard}
+						onAutoSyncChange={changeAutoSync}
+						onOpenSetup={openDoctor}
+					/>
+				)}
 				<ActivityBadge />
 			</>
 		);
@@ -572,7 +646,13 @@ export function App() {
 			{route === 'detail' && detail !== null && (
 				// The key makes the screen remount per game, so its state
 				// (which artwork is loading) never leaks into the next one.
-				<GameDetail key={detail.id} game={detail} disc={detailDisc ?? undefined} onBack={closeDetail} />
+				<GameDetail
+					key={detail.id}
+					game={detail}
+					disc={detailDisc ?? undefined}
+					onBack={closeDetail}
+					onOpenDownloads={openDownloads}
+				/>
 			)}
 			{picker !== null && (
 				<DiscPicker

@@ -250,6 +250,30 @@ Detail screen
                        ─► complete sync session
 ```
 
+**Verified against the live 5.4.0 instance (2026-10-25, `tools/synctest.ts`):**
+- The negotiate payload is snake_case end to end (`rom_id`, `file_name`,
+  `content_hash`, `updated_at`, `file_size_bytes`) — Pydantic silently drops
+  camelCase keys; the saves list *and* the heartbeat must be mapped by hand.
+- Saves pair on **(rom_id, slot)**. RetroArch/mGBA writes `Foo.srm`/`.gbs`;
+  the server's mGBA clients call that slot `autosave`, so the inventory maps
+  those two extensions to `autosave` (everything else keeps its extension).
+  Without the mapping a real save never pairs and is re-offered every sync.
+- `emulators: null` (RetroArch loads any core's saves — a list would make the
+  server "leave alone" saves another emulator wrote in the same slot). The
+  *declared* emulator is the placed core's identity (`mgba_libretro*.nro` →
+  `mgba`, fork names normalised) so an upload replaces, not duplicates.
+- `restore_unlisted: true` + `rom_ids` = **all installed roms** (not just the
+  ones holding a local save): the console never deletes saves, so a server
+  save for an installed rom without a local copy is a download — that is how
+  progress made elsewhere reaches the console.
+- A restored save with no local pair is written under the rom's base name
+  (RetroArch's own save name), snapshotted with the server hash — it joins
+  the next inventory and converges to `no_op` (the E2E asserts a quiet 2nd
+  sync: `=2` no-ops, zero traffic).
+- Pitfall: `baseName()` is file-name-only; the manifest holds *paths*, so the
+  join uses `baseNameOf()`. (This bug made every sync silently no-op — the
+  E2E upload check is what caught it.)
+
 ### SD layout (all constants in `src/retroarch/layout.ts`)
 
 ```

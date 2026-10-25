@@ -6,6 +6,28 @@
  * rest of the app only ever sees these.
  */
 
+/**
+ * One file of a rom on the server (an entry of the 5.x `files` array).
+ *
+ * The rom list of some instances omits it, so every field may be empty:
+ * the install flow treats `fileName === ''` as "not in the list — fetch
+ * the single-rom endpoint before acting".
+ */
+export interface RommRomFile {
+	/** The exact file name the content routes expect, e.g. `game (USA).zip`. */
+	fileName: string;
+	/** File size in bytes, or 0 when the server did not report it. */
+	sizeBytes: number;
+	/** The server's MD5 of the content, or '' when it did not report one. */
+	md5Hash: string;
+	/** Lowercase extension without the dot, e.g. `zip`. */
+	extension: string;
+	/** True for the top-level file of a multi-file rom. */
+	topLevel: boolean;
+	/** Number of archive members the server reported, or 0. */
+	memberCount: number;
+}
+
 /** One disc of a multi-disc release, as reported by the server. */
 export interface RommSibling {
 	id: number;
@@ -56,6 +78,19 @@ export interface RommGame {
 	createdAt: string;
 	/** True when the server reports the rom as a favourite. */
 	favorite: boolean;
+	/**
+	 * The rom's top-level content hash (the 5.x single-rom route keeps the
+	 * file's MD5 here; the list may or may not). '' when the server did
+	 * not compute one — staleness checks fall back to size.
+	 */
+	md5Hash: string;
+	/**
+	 * The rom's files as the *list* reported them — empty on instances that
+	 * omit the field (the install flow then fetches the single-rom route).
+	 */
+	files: RommRomFile[];
+	/** True when the server marks the rom as multi-file (multi-part game). */
+	hasMultipleFiles: boolean;
 }
 
 /**
@@ -146,4 +181,6 @@ export interface GetGamesOptions {
 	favoriteOnly?: boolean;
 	/** Only the roms of one saved collection. */
 	collection?: RommCollection;
+	/** Only the roms of one platform (its server id; a 5.x filter). */
+	platformId?: number;
 }

@@ -6,7 +6,7 @@
  * server or valid credentials. The shape matches `RommGame` exactly, so
  * the library screen cannot tell the difference.
  */
-import type { RommCollection, RommGame, RommSibling } from './romm';
+import type { RommCollection, RommGame, RommRomFile, RommSibling } from './romm';
 
 interface MockEntry {
 	name: string;
@@ -514,6 +514,27 @@ function sib(id: number, sort: string, fsName: string, name: string, isMain: boo
 	return { id, sort, fsName, name, isMain };
 }
 
+/**
+ * The file metadata the install flow would read for a mock rom: a single
+ * top-level file mirroring the rom's own `fsName` and size, so the detail
+ * screen's install row has something plausible to size itself against.
+ */
+function gameFile(
+	id: number,
+	fsName: string,
+	sizeBytes: number,
+): Pick<RommGame, 'files' | 'hasMultipleFiles' | 'md5Hash'> {
+	const file: RommRomFile = {
+		fileName: fsName,
+		sizeBytes,
+		md5Hash: `mock-${id}`,
+		extension: fsName.includes('.') ? fsName.slice(fsName.lastIndexOf('.') + 1).toLowerCase() : '',
+		topLevel: true,
+		memberCount: 1,
+	};
+	return { files: [file], hasMultipleFiles: false, md5Hash: `mock-${id}` };
+}
+
 /** An ISO timestamp `ms` milliseconds ago. */
 function ago(ms: number): string {
 	return new Date(Date.now() - ms).toISOString();
@@ -535,6 +556,7 @@ export const MOCK_GAMES: RommGame[] = ENTRIES.map((entry, i) => {
 	const id = i + 1;
 	const fsName = `${entry.name}.zip`;
 	return {
+		...gameFile(id, fsName, entry.sizeBytes),
 		id,
 		name: entry.name,
 		platformId: 0,
@@ -577,6 +599,7 @@ const ffvi = MOCK_GAMES.find((g) => g.name === 'Final Fantasy VI');
 if (ffvi !== undefined) {
 	const disc2Id = ENTRIES.length + 1;
 	const disc2: RommGame = {
+		...gameFile(disc2Id, `${ffvi.name} (Disc 2).zip`, ffvi.sizeBytes),
 		id: disc2Id,
 		name: ffvi.name,
 		platformId: 0,

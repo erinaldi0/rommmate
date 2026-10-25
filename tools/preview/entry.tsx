@@ -18,6 +18,8 @@
  *   sections    the library dashboard (continue playing / favourites /
  *               platforms / recently added / collections)
  *   picker      the multi-disc chooser
+ *   downloads   the download queue (the Play feature's transfers)
+ *   doctor      the Play setup doctor
  *
  * Credentials (query parameters):
  *   seed=1      pre-fills the settings form with a fake instance + token
@@ -47,6 +49,8 @@ import { LibrarySections } from '../../src/components/LibrarySections';
 import { GameDetail } from '../../src/components/GameDetail';
 import { DiscPicker } from '../../src/components/DiscPicker';
 import { Spinner } from '../../src/components/Spinner';
+import { DownloadsScreen } from '../../src/components/DownloadsScreen';
+import { SetupDoctor } from '../../src/components/SetupDoctor';
 import { installErrorTrap } from '../../src/errors';
 import { patchInsertBefore } from '../../src/react-tela-compat';
 import { coverCacheSize, hasCover, resolveCover } from '../../src/covers';
@@ -414,6 +418,28 @@ function SectionsView() {
 	);
 }
 
+/** The downloads queue on its own (empty — it shows the idle state). */
+function DownloadsView() {
+	return <DownloadsScreen onBack={() => {}} />;
+}
+
+/**
+ * The Play setup doctor on its own. Without a bound client it reports the
+ * "not connected" line, which is enough to check the layout.
+ */
+function DoctorView() {
+	return (
+		<SetupDoctor
+			onBack={() => {}}
+			baseUrl="http://10.147.18.46:8200"
+			platforms={[
+				{ name: 'Nintendo 64', id: 7 },
+				{ name: 'PlayStation', id: 11 },
+			]}
+		/>
+	);
+}
+
 /** The disc picker on its own, pointed at the mock's multi-disc release. */
 function PickerView() {
 	const multi = useMemo(
@@ -458,6 +484,10 @@ if (view === 'demo' || view === 'filter' || view === 'empty') {
 	renderApp(<SectionsView />);
 } else if (view === 'picker') {
 	renderApp(<PickerView />);
+} else if (view === 'downloads') {
+	renderApp(<DownloadsView />);
+} else if (view === 'doctor') {
+	renderApp(<DoctorView />);
 } else {
 	renderApp(<App />);
 }

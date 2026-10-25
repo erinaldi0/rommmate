@@ -7,6 +7,7 @@
  * sensible value — an unknown schema degrades to an empty field instead of
  * a parse failure. `RommClient` runs every entry through these.
  */
+import type { RommRomFile } from './types';
 
 /**
  * Read one entry of a RomM `assets` object (≤4.x). Asset values come in two
@@ -197,6 +198,53 @@ export function parseReleaseDate(e: Record<string, unknown>): string {
 	const day = String(date.getUTCDate() + 0).padStart(2, '0');
 	return `${year}-${month}-${day}`;
 }
+/**
+ * The rom's files (the 5.x `files` array).
+ *
+ * Some instances omit the field from the list entirely, and members arrive
+ * as objects (5.x `RomFileSchema`) or, on older builds, as plain strings.
+ * Anything unparseable is dropped — an entry without a `file_name` is
+ * useless to the download routes, which key on it.
+ */
+export function parseFiles(e: Record<string, unknown>): RommRomFile[] {
+	const raw = e['files'];
+	if (!Array.isArray(raw)) return [];
+
+	const out: RommRomFile[] = [];
+	for (const f of raw) {
+		let fileName = '';
+		let sizeBytes = 0;
+		let md5Hash = '';
+		let topLevel = false;
+		let memberCount = 0;
+
+		if (typeof f === 'string') {
+			fileName = f.trim();
+		} else if (typeof f === 'object' && f !== null) {
+			const o = f as Record<string, unknown>;
+			fileName = firstString(o, ['file_name', 'name']);
+			sizeBytes = firstNumber(o, ['file_size_bytes', 'fs_size_bytes']);
+			md5Hash = firstString(o, ['md5_hash']);
+			topLevel = o['is_top_level'] === true;
+			const members = o['archive_members'];
+			if (Array.isArray(members)) memberCount = members.length;
+		}
+
+		if (fileName === '') continue;
+		out.push({
+			fileName,
+			sizeBytes,
+			md5Hash,
+			extension: fileName.includes('.')
+				? fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase()
+				: '',
+			topLevel,
+			memberCount,
+		});
+	}
+	return out;
+}
+
 /** A small, stable string hash (djb2) — for content keys of id-less roms. */
 export function hashKey(s: string): number {
 	let h = 5381;

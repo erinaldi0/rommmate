@@ -37,8 +37,11 @@ export function ActivityBadge() {
 	const activities = useSyncExternalStore(subscribeActivity, getActivities);
 
 	// The dots only move while something actually runs, so an idle badge
-	// repaints nothing.
-	const hasSpinner = activities.some((a) => a.key === 'library');
+	// repaints nothing. (Downloads and syncs count as "running" too — they
+	// are the badge's reason to exist now that the app does real work.)
+	const hasSpinner = activities.some(
+		(a) => a.key === 'library' || a.key === 'download' || a.key === 'sync',
+	);
 	const tick = useTick(SPINNER_TICK_MS, hasSpinner);
 
 	if (activities.length === 0) return null;

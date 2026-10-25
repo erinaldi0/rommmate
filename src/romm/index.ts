@@ -36,6 +36,7 @@ export type {
 	RommCollection,
 	RommGame,
 	RommPlatform,
+	RommRomFile,
 	RommSibling,
 	RommTitle,
 	LibrarySection,
@@ -43,3 +44,13 @@ export type {
 } from './types';
 export { groupTitles } from './group';
 export { normalizeBaseUrl, RommClient } from './client';
+export type {
+	ClientSaveState,
+	PlaySessionEntry,
+	RommDevice,
+	RommFirmware,
+	RommSave,
+	RommState,
+	SyncNegotiateResult,
+	SyncOperation,
+} from './play';

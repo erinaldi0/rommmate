@@ -1,14 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Rect, Text, useDimensions, useParent } from 'react-tela';
 import { colors, fontFamily, fontSize, radius, space } from '../theme';
 import { truncate, wrapLines } from '../text';
-import { useGamepadButton } from '../hooks/use-gamepad';
+import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
 import { Header } from './Header';
 import { HintBar } from './HintBar';
 import { CoverImage, type CoverStatus } from './CoverImage';
 import { Spinner } from './Spinner';
 import { BUILD_ID } from '../version';
 import type { RommGame } from '../romm';
+import { play, usePlayState, type PlayState } from '../play';
 
 interface Props {
 	game: RommGame;
@@ -16,6 +17,8 @@ interface Props {
 	onBack: () => void;
 	/** The disc's position in its release, when the game has several. */
 	disc?: { index: number; count: number };
+	/** Open the downloads queue (X). */
+	onOpenDownloads?: () => void;
 }
 
 const COVER_W = 200;
@@ -29,26 +32,198 @@ const SHOT_Y = 400;
 const COL_X = 420;
 const META_ROW_H = 30;
 const SUMMARY_LINE_H = 27;
+/** The action block sits at a fixed spot, clear of the hint bar. */
+const ACTIONS_TOP = 512;
+const ACTION_H = 26;
+const ACTION_GAP = 8;
 
 /** Human readable file size. */
 function formatBytes(bytes: number): string {
+	if (bytes <= 0) return '';
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 	return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+/** One action row: what A does + its current status. */
+interface ActionRow {
+	label: string;
+	status: string;
+	/** The status colour (disabled rows dim, warnings warn). */
+	tone: 'ok' | 'warn' | 'dim' | 'accent';
+	enabled: boolean;
+	/** The work A performs. */
+	run: () => void;
+	/** A thin progress bar under the row, when given. */
+	progress: number | null;
+}
+
+/**
+ * The four action rows, derived from the game's play state.
+ *
+ * Play is the primary verb; Install exists for everything (even the
+ * platforms with no core — "download only"); Sync and Uninstall are the
+ * housekeeping pair.
+ */
+function actionRows(
+	game: RommGame,
+	state: PlayState,
+	notify: (message: string) => void,
+): ActionRow[] {
+	const size =
+		state.kind === 'not-installed'
+			? state.sizeBytes
+			: game.sizeBytes;
+
+	const playRow = (): ActionRow => {
+		switch (state.kind) {
+			case 'demo':
+				return { label: 'Play', status: 'demo mode', tone: 'dim', enabled: false, run: () => {}, progress: null };
+			case 'unsupported':
+				return {
+					label: 'Play',
+					status: `no core for ${game.platform || 'this platform'}`,
+					tone: 'warn',
+					enabled: false,
+					run: () => {},
+					progress: null,
+				};
+			case 'not-installed':
+				return { label: 'Play', status: 'install first', tone: 'dim', enabled: false, run: () => {}, progress: null };
+			case 'installing':
+				return { label: 'Play', status: 'preparing…', tone: 'dim', enabled: false, run: () => {}, progress: state.progress };
+			case 'stale':
+				return { label: 'Play', status: 'changed on the server — re-download', tone: 'warn', enabled: false, run: () => {}, progress: null };
+			default:
+				return {
+					label: 'Play',
+					status: 'launch',
+					tone: 'accent',
+					enabled: true,
+					run: () => {
+						void play.play(game).then(notify);
+					},
+					progress: null,
+				};
+		}
+	};
+
+	const installRow = (): ActionRow => {
+		const sizeText = size > 0 ? ` · ${formatBytes(size)}` : '';
+		switch (state.kind) {
+			case 'demo':
+				return { label: 'Install', status: 'demo mode', tone: 'dim', enabled: false, run: () => {}, progress: null };
+			case 'not-installed':
+				return {
+					label: 'Install',
+					status: `download${sizeText}`,
+					tone: 'ok',
+					enabled: true,
+					run: () => {
+						void play.install(game).then(notify);
+					},
+					progress: null,
+				};
+			case 'installing':
+				return {
+					label: 'Install',
+					status: `${Math.floor(state.progress * 100)}%${sizeText}`,
+					tone: 'accent',
+					enabled: false,
+					run: () => {},
+					progress: state.progress,
+				};
+			case 'ready':
+				return { label: 'Install', status: 'installed', tone: 'ok', enabled: false, run: () => {}, progress: null };
+			case 'stale':
+				return {
+					label: 'Install',
+					status: 're-download',
+					tone: 'warn',
+					enabled: true,
+					run: () => {
+						void play.install(game).then(notify);
+					},
+					progress: null,
+				};
+			default:
+				// unsupported: download-only is still useful.
+				return {
+					label: 'Install',
+					status: `download only${sizeText}`,
+					tone: 'ok',
+					enabled: true,
+					run: () => {
+						void play.install(game).then(notify);
+					},
+					progress: null,
+				};
+		}
+	};
+
+	const syncRow = (): ActionRow =>
+		state.kind === 'demo'
+			? { label: 'Sync saves', status: 'demo mode', tone: 'dim', enabled: false, run: () => {}, progress: null }
+			: {
+					label: 'Sync saves',
+					status: 'saves + states',
+					tone: 'ok',
+					enabled: true,
+					run: () => {
+						void play.sync(game).then(notify);
+					},
+					progress: null,
+				};
+
+	const installed = state.kind === 'ready' || state.kind === 'stale';
+	const uninstallRow = (): ActionRow =>
+		state.kind === 'demo' || !installed
+			? { label: 'Uninstall', status: state.kind === 'demo' ? 'demo mode' : 'not installed', tone: 'dim', enabled: false, run: () => {}, progress: null }
+			: {
+					label: 'Uninstall',
+					status: 'remove files',
+					tone: 'ok',
+					enabled: true,
+					run: () => {
+						void play.uninstall(game).then(notify);
+					},
+					progress: null,
+				};
+
+	return [playRow(), installRow(), syncRow(), uninstallRow()];
+}
+
 /**
  * The detail screen for a single game.
  *
- * Two columns: artwork on the left, the facts and the blurb on the right.
- * Everything is optional — a rom with no description, no genres and no
- * screenshot still renders as a coherent page instead of a half empty one.
+ * Two columns: artwork on the left, the facts, the blurb and the action
+ * block (Play / Install / Sync / Uninstall) on the right. Everything is
+ * optional — a rom with no description, no genres and no screenshot still
+ * renders as a coherent page instead of a half empty one.
  */
-export function GameDetail({ game, onBack, disc }: Props) {
+export function GameDetail({ game, onBack, disc, onOpenDownloads }: Props) {
 	const dims = useDimensions();
 	const { ctx } = useParent();
 
+	// The game feeds the play service (state derivation + actions).
+	useEffect(() => {
+		play.noteGame(game);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [game]);
+
+	const state = usePlayState(game.id);
+	const [focus, setFocus] = useState(0);
+	const [status, setStatus] = useState('');
+	const notify = (message: string) => setStatus(message);
+
+	const rows = actionRows(game, state, notify);
+	const focusClamped = Math.min(focus, rows.length - 1);
+
+	useDirection('Up', () => setFocus((f) => Math.max(0, f - 1)), []);
+	useDirection('Down', () => setFocus((f) => Math.min(rows.length - 1, f + 1)), []);
+	useGamepadButton('A', () => rows[focusClamped]?.run(), [focusClamped, rows]);
+	useGamepadButton('X', () => onOpenDownloads?.(), [onOpenDownloads]);
 	useGamepadButton('B', onBack, [onBack]);
 
 	// The cover is downloaded in the background; the screen says so instead
@@ -64,19 +239,27 @@ export function GameDetail({ game, onBack, disc }: Props) {
 	const title = truncate(ctx, name, dims.width - 320, fontSize.display);
 	const colW = dims.width - COL_X - space.xl;
 
-	const rows: Array<[string, string]> = [];
-	if (disc !== undefined && disc.count > 1) rows.push(['Disc', `${disc.index + 1} of ${disc.count}`]);
-	if (game.platform !== '') rows.push(['Platform', game.platform]);
-	if (game.releaseDate !== '') rows.push(['Released', game.releaseDate]);
-	if (game.genres.length > 0) rows.push(['Genres', game.genres.join(', ')]);
-	if (game.sizeBytes > 0) rows.push(['Size', formatBytes(game.sizeBytes)]);
+	const metaRows: Array<[string, string]> = [];
+	if (disc !== undefined && disc.count > 1) metaRows.push(['Disc', `${disc.index + 1} of ${disc.count}`]);
+	if (game.platform !== '') metaRows.push(['Platform', game.platform]);
+	if (game.releaseDate !== '') metaRows.push(['Released', game.releaseDate]);
+	if (game.genres.length > 0) metaRows.push(['Genres', game.genres.join(', ')]);
+	if (game.sizeBytes > 0) metaRows.push(['Size', formatBytes(game.sizeBytes)]);
 
+	// Six lines max: the summary must leave room for the action block.
 	const summaryLines =
 		game.summary === ''
 			? []
-			: wrapLines(ctx, game.summary, colW, 9, fontSize.body);
+			: wrapLines(ctx, game.summary, colW, 6, fontSize.body);
 
-	const summaryY = 118 + rows.length * META_ROW_H + 28;
+	const summaryY = 118 + metaRows.length * META_ROW_H + 28;
+
+	const toneFill: Record<ActionRow['tone'], string> = {
+		ok: colors.success,
+		warn: colors.warning,
+		dim: colors.textFaint,
+		accent: colors.accent,
+	};
 
 	return (
 		<>
@@ -176,7 +359,7 @@ export function GameDetail({ game, onBack, disc }: Props) {
 			)}
 
 			{/* Facts. */}
-			{rows.map(([label, value], i) => (
+			{metaRows.map(([label, value], i) => (
 				<React.Fragment key={label}>
 					<Text
 						x={COL_X}
@@ -227,7 +410,74 @@ export function GameDetail({ game, onBack, disc }: Props) {
 				</Text>
 			)}
 
-			<HintBar hints={['B back to library']} />
+			{/* The last action result, when there is one to report. */}
+			{status !== '' && (
+				<Text
+					x={COL_X}
+					y={ACTIONS_TOP - 14}
+					fontFamily={fontFamily}
+					fontSize={fontSize.tiny}
+					fill={/fail|missing|error|no /i.test(status) ? colors.danger : colors.textMuted}
+					maxWidth={colW}
+					overflow="ellipsis"
+				>
+					{status}
+				</Text>
+			)}
+
+			{/* The action block. */}
+			{rows.map((row, i) => {
+				const y = ACTIONS_TOP + i * (ACTION_H + ACTION_GAP);
+				const focused = i === focusClamped;
+				return (
+					<React.Fragment key={row.label}>
+						<Rect
+							x={COL_X - 10}
+							y={y - 8}
+							width={colW + 20}
+							height={ACTION_H + 14}
+							fill={focused ? colors.surfaceRaised : colors.surface}
+							stroke={focused ? colors.accent : colors.border}
+							lineWidth={focused ? 2 : 1}
+							borderRadius={radius.sm}
+						/>
+						<Text
+							x={COL_X + 8}
+							y={y + 2}
+							fontFamily={fontFamily}
+							fontSize={fontSize.body}
+							fontWeight={row.enabled ? 'bold' : ''}
+							fill={row.enabled ? (focused ? colors.textPrimary : colors.textSecondary) : colors.textFaint}
+						>
+							{row.label}
+						</Text>
+						<Text
+							x={COL_X + colW - 8}
+							y={y + 2}
+							fontFamily={fontFamily}
+							fontSize={fontSize.small}
+							fill={toneFill[row.tone]}
+							textAlign="right"
+							maxWidth={colW - 220}
+							overflow="ellipsis"
+						>
+							{row.status}
+						</Text>
+						{row.progress !== null && (
+							<Rect
+								x={COL_X + 8}
+								y={y + ACTION_H - 6}
+								width={Math.max(4, (colW - 16) * row.progress)}
+								height={4}
+								fill={colors.accent}
+								borderRadius={2}
+							/>
+						)}
+					</React.Fragment>
+				);
+			})}
+
+			<HintBar hints={['A ' + (rows[focusClamped]?.label.toLowerCase() ?? 'do'), 'X downloads', 'B back']} />
 		</>
 	);
 }

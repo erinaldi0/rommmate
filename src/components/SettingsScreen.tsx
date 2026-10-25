@@ -29,12 +29,16 @@ interface Props {
 	onCancel?: () => void;
 	/** Persist a keyboard-mode change (the last row). */
 	onKeyboardChange: (mode: KeyboardMode) => void;
+	/** Persist an auto-sync change (the Play behaviour row). */
+	onAutoSyncChange: (on: boolean) => void;
+	/** Open the Play setup doctor (the Play row). */
+	onOpenSetup: () => void;
 }
 
 /** A settings row: an editable text field, or a named action. */
 type Row =
 	| { kind: 'field'; label: string; field: Field }
-	| { kind: 'action'; label: string; action: 'method' | 'save' | 'demo' | 'keyboard' };
+	| { kind: 'action'; label: string; action: 'method' | 'save' | 'demo' | 'keyboard' | 'autosync' | 'setup' };
 
 // Labels must stay short: the value column starts 280 px in, and a longer
 // label ("Demo mode (mock data)" did) runs straight into the value text.
@@ -62,14 +66,17 @@ function buildRows(method: AuthMethod): Row[] {
 		{ kind: 'action', label: 'Save & Connect', action: 'save' },
 		{ kind: 'action', label: 'Demo mode', action: 'demo' },
 		{ kind: 'action', label: 'Keyboard', action: 'keyboard' },
+		{ kind: 'action', label: 'Auto-sync saves', action: 'autosync' },
+		{ kind: 'action', label: 'Play setup', action: 'setup' },
 	];
 }
 
-// Up to seven rows (password grant) must clear the status line.
+// Up to nine rows (password grant + the two Play rows) must clear the
+// status line and the footer hint.
 const ROW_W = 920;
-const ROW_H = 52;
-const ROW_GAP = 10;
-const ROW_TOP = 172;
+const ROW_H = 48;
+const ROW_GAP = 8;
+const ROW_TOP = 168;
 
 function mask(v: string): string {
 	if (!v) return '(not set)';
@@ -87,7 +94,7 @@ function maskSecret(v: string): string {
 	return v ? '•'.repeat(Math.min(16, Math.max(4, v.length))) : '(not set)';
 }
 
-export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel, onKeyboardChange }: Props) {
+export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel, onKeyboardChange, onAutoSyncChange, onOpenSetup }: Props) {
 	const dims = useDimensions();
 	const [cfg, setCfg] = useState<Config>(initial);
 	const method = cfg.authMethod ?? DEFAULT_AUTH_METHOD;
@@ -159,6 +166,13 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		setFocus((f) => Math.min(f, buildRows(next).length - 1));
 	}
 
+	/** Cycle the Auto-sync row: on → off. */
+	function cycleAutoSync() {
+		const next = (cfg.autoSync ?? true) === false ? true : false;
+		setCfg((c) => ({ ...c, autoSync: next }));
+		onAutoSyncChange(next);
+	}
+
 	/** Do what A on row `i` does — shared by the A button and a tap. */
 	function activateRow(i: number) {
 		const row = rows[i];
@@ -168,6 +182,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		else if (row.action === 'save') {
 			if (!busy) onSave(cfg);
 		} else if (row.action === 'demo') onDemo();
+		else if (row.action === 'autosync') cycleAutoSync();
+		else if (row.action === 'setup') onOpenSetup();
 		else cycleKeyboard();
 	}
 
@@ -182,7 +198,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	useGamepadButton(
 		'A',
 		() => activateRow(focus),
-		[focus, cfg, busy, onDemo, onSave, onKeyboardChange],
+		[focus, cfg, busy, onDemo, onSave, onKeyboardChange, onAutoSyncChange, onOpenSetup],
 		kbd === null,
 	);
 	useGamepadButton(
@@ -239,6 +255,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		if (row.action === 'method') return `${METHOD_LABEL[method]} — A to change`;
 		if (row.action === 'save') return busy ? 'connecting… · B to cancel' : 'A to save & open library';
 		if (row.action === 'demo') return 'A to skip the login and browse mock games';
+		if (row.action === 'autosync') return (cfg.autoSync ?? true) ? 'on — A to turn off' : 'off — A to turn on';
+		if (row.action === 'setup') return 'A to check loader, cores & BIOS';
 		return `${cfg.keyboard ?? 'builtin'} — A to change`;
 	};
 

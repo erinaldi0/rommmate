@@ -8,6 +8,7 @@ import {
 	hashKey,
 	nonNegNumber,
 	parseCover,
+	parseFiles,
 	parseGenres,
 	parsePlatform,
 	parseReleaseDate,
@@ -120,6 +121,21 @@ export class RommClient {
 				? maybeRelative
 				: this.#baseUrl + (maybeRelative.startsWith('/') ? '' : '/') + maybeRelative;
 		return url.replace(/ /g, '%20');
+	}
+
+	/**
+	 * The raw authenticated request, exposed for the Play module
+	 * (`romm/play.ts`): firmware, saves, states, sync, devices and
+	 * play-sessions all reuse the client's token and its one-shot 401
+	 * refresh instead of re-implementing either.
+	 */
+	request(path: string, init?: RequestInit, signal?: AbortSignal): Promise<Response> {
+		return this.#request(path, init ?? {}, signal);
+	}
+
+	/** The `#absUrl` normalisation as a public helper (the `?ts=` space). */
+	absUrl(maybeRelative: string): string {
+		return this.#absUrl(maybeRelative);
 	}
 
 	/**
@@ -406,7 +422,34 @@ export class RommClient {
 			lastPlayedAt: typeof ru['last_played'] === 'string' ? ru['last_played'] : '',
 			createdAt: firstString(e, ['created_at']),
 			favorite: e['favorite'] === true || ru['is_favorite'] === true,
+			md5Hash: firstString(e, ['md5_hash']),
+			files: parseFiles(e),
+			hasMultipleFiles: e['has_multiple_files'] === true,
 		};
+	}
+
+	/**
+	 * Fetch one rom by id (the single-rom route, which carries the full
+	 * `files` array on 5.x even when the list omits it).
+	 *
+	 * @returns the parsed game, or null on any failure (a 404 means the
+	 *          rom is gone, which is not an error worth surfacing).
+	 */
+	async getRom(
+		id: number,
+		signal?: AbortSignal,
+	): Promise<{ game: RommGame | null; error: string | null }> {
+		try {
+			const res = await this.#request(`/api/roms/${id}`, {}, signal);
+			if (res.status === 404) return { game: null, error: null };
+			if (!res.ok) return { game: null, error: `HTTP ${res.status}` };
+			const json: unknown = await res.json();
+			const game = this.#parseRom(json);
+			return { game, error: null };
+		} catch (err) {
+			if (signal?.aborted) return { game: null, error: 'cancelled' };
+			return { game: null, error: String(err) };
+		}
 	}
 
 	/**
@@ -511,9 +554,11 @@ export class RommClient {
 			return {
 				games: [],
 				error:
-					options?.favoriteOnly && (options.collection === undefined || options.collection === null)
-						? 'favourites filter is not available on this server'
-						: 'collections are not available on this server',
+					options !== undefined && options.platformId !== undefined && !options.favoriteOnly && options.collection === undefined
+						? 'the platform filter is not available on this server'
+						: options?.favoriteOnly && (options.collection === undefined || options.collection === null)
+							? 'favourites filter is not available on this server'
+							: 'collections are not available on this server',
 				truncated: false,
 			};
 		}
