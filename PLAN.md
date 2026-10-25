@@ -1,14 +1,22 @@
-# RomM for Switch — Project Plan (v2)
+# RomM for Switch — Project Plan (v3)
 
 A Nintendo Switch companion app for [RomM](https://romm.app), a self-hosted ROM
 manager — built on **nx.js**, the JavaScript/TypeScript runtime for Switch homebrew,
 with a **react-tela** (React → canvas) UI.
 
-> **v2 pivot (2026-10):** v1 of this plan used C++ + libnx + Borealis + libcurl.
-> We are rewriting on **nx.js** (V8 + libuv + Skia, Web-platform APIs). The v1
-> implementation was removed from the working tree — it is preserved in the
-> initial commit (`6cc4721`) and remains useful as a reference for the RomM JSON
-> shapes and the cover-grid layout.
+> **v13 pivot (2026-10): the *Play* feature.** v1–v12 built the *browse* half
+> (connect, library, dashboard, artwork). v13 makes it a real player: download
+> roms, BIOS and the emulator (RetroArch) **from the RomM server**, launch
+> RetroArch in-game, and **sync saves + save states** back. See
+> [v13 — Play](#v13--play-downloadslaunchsync).
+>
+> The long-form iteration notes from v0.5–v0.12 have been compressed into the
+> [changelog](#changelog); the detail lives in the git history.
+>
+> **v2 pivot (2026-10, historical):** v1 used C++ + libnx + Borealis + libcurl;
+> it was rewritten on nx.js and the v1 tree was removed (preserved in the
+> initial commit `6cc4721`; still a useful reference for the older RomM JSON
+> shapes).
 
 ## Why nx.js
 
@@ -24,89 +32,108 @@ with a **react-tela** (React → canvas) UI.
   [`switch-nsp-forwarder`](https://github.com/TooTallNate/switch-nsp-forwarder)
   is a shipped, polished canvas UI app (tile grid, joystick navigation,
   touch-scrolling) built with exactly this stack. We model ours on it.
+- **It can launch other homebrew**: `Switch.Application` takes an NRO path (or
+  buffer) and `launch(...args)` starts it — the mechanism the *Play* button uses
+  to start RetroArch with a core and game.
 
 ## Stack
 
 | Concern       | Choice |
 |---------------|--------|
-| Runtime       | **nx.js** v1 — V8 + libuv + Skia; pinned release (`1.0.0-beta.6` at time of writing); docs: [nxjs.n8.io](https://nxjs.n8.io/runtime) |
+| Runtime       | **nx.js** v1 — V8 + libuv + Skia; pinned release (`1.0.0-beta.7`); docs: [nxjs.n8.io](https://nxjs.n8.io/runtime) |
 | Language      | **TypeScript**, bundled by **esbuild** → single `romfs/main.js` |
 | UI            | **React + [react-tela](https://github.com/TooTallNate/react-tela)** — `<Rect>`/`<Text>`/`<Image>`/`<Group>` canvas scene graph; `render(<App/>, screen)`; **version-pinned** (marked "in development — expect breaking changes") |
-| Layout        | Manual `<Group>` positioning for the tile grid; `@react-tela/flex` (Yoga/WASM) available later if needed |
+| Layout        | Manual positioning for the tile grid; `@react-tela/flex` (Yoga/WASM) available later if needed |
 | Networking    | global `fetch()` + `WebSocket` (RomM API, bearer token) |
-| Persistence   | `localStorage` (Save Data) for config; `Switch.*` native fs APIs for the cover-art cache on `sdmc:` |
+| Persistence   | `localStorage` (Save Data) for config; `Switch.*` native fs APIs for SD data (covers, roms, saves) |
 | Graphics      | Skia-accelerated canvas (`screen.getContext('2d')`) in **application mode** |
 | Packaging     | **NSP installed title** (slim: tiny forwarder + shared runtime), via `@nx.js/nsp`; NRO builds for dev iteration |
+| v13 extras    | **`fflate`** (zip — the runtime has none; `DecompressionStream` covers gzip/zstd only) and **`spark-md5`** (streaming MD5 — RomM hashes saves with MD5, WebCrypto has no MD5). Both are small, pure-JS, esbuild-friendly. |
 
 ## nx.js facts we rely on (verify per release — it is 1.0.0-beta)
 
-- `screen` — 1280×720 display; `getContext('2d')` (Skia, GPU in application mode,
-  CPU raster fallback in applet mode). One context kind per canvas.
+- `screen` — 1280×720 display; `getContext('2d')` (Skia, GPU in application
+  mode, CPU raster fallback in applet mode). One context kind per canvas.
 - **Memory regimes**: *application mode* (installed NSP, or hbmenu via title
   override) → ~3 GiB, full V8 JIT, GPU canvas. *Applet mode* (launched from the
   Album) → ~380 MiB, jitless by default, CPU raster, no WebGL2. **We ship an NSP
   → application mode.** Tunable via `nxjs.ini` in romfs (`[v8] jit`,
-  `[memory] heap_limit`, `[renderer] mode`, `[threadpool]`, …); fallbacks are
-  logged to `sdmc:/switch/nxjs-debug.log`.
-- **Packaging**: slim (default) apps are a few-hundred-KB launcher that
-  chainloads a shared runtime from `sdmc:/nx.js/nxjs-v<version>.nro`, chosen by
-  the semver `[runtime] version` baked into `nxjs.ini`. On first launch the
-  bootstrap **auto-downloads** a compatible runtime from the nx.js GitHub
-  releases (needs Wi-Fi once); manual placement works too. Fat builds embed the
-  whole runtime (~40 MB NRO / ~21 MB NSP) — available via `--fat` if ever needed.
-- **Input**: Web Gamepad (`Gamepad`, `GamepadButton`, `GamepadEvent`, haptics;
-  `Gamepad.id` = device name + serial on fw 5.0+) + `TouchEvent`/`Touch` for the
-  touchscreen.
-- **Files**: `Switch` namespace — `readFileSync`/`writeFile`/`mkdir`/`readDir`
-  etc. for `sdmc:` paths; `romfs:`/`sdmc:`/`nxjs:` URL protocols for
-  `Image`, `fetch`, streams.
-- **Misc**: `fonts` (canvas font set), `console` (themed on-screen terminal —
-  handy for debugging), `localStorage` (Storage → Save Data), `Performance`,
-  timers, `TextEncoder/Decoder` (utf-8).
+  `[memory] heap_limit`, …); fallbacks are logged to `sdmc:/switch/nxjs-debug.log`.
+- **Packaging**: slim apps are a few-hundred-KB launcher that chainloads a
+  shared runtime from `sdmc:/nx.js/nxjs-v<version>.nro` (chosen by the `[runtime]
+  version` in `nxjs.ini`); the bootstrap auto-downloads it on first launch. Fat
+  builds embed the whole runtime via `--fat`.
+- **Input**: Web Gamepad (`Gamepad`, `GamepadButton`, `GamepadEvent`, haptics)
+  + `TouchEvent`/`Touch` for the touchscreen.
+- **Files**: `Switch` namespace — `readFile`/`writeFile`/`mkdir`/`readDir`/
+  `stat`/`rename`/`remove` for `sdmc:` paths; `FsFile` (a `File` subclass)
+  streams through `ReadableStream`/`WritableStream` — **the only sane way to
+  move big files without holding them in the (32-bit) V8 heap**; `romfs:`/
+  `sdmc:`/`nxjs:` URL protocols for `Image`, `fetch`, streams.
+- **Switch surface added to the notes in v13**: `Switch.Application(pathOrNro)`
+  + `launch(...args): never` (title takeover of a homebrew NRO, args passed —
+  the *Play* mechanism; needs an on-box spike), `Switch.FileSystem.openSdmc()`
+  → `freeSpace()`/`totalSpace()` (download guards), `Switch.WebApplet(url)`
+  (open the RomM web UI for one-time uploads), `crypto.subtle` (SHA only —
+  **no MD5**), `DecompressionStream` (deflate/gzip/zstd — **no zip**).
+- **Misc**: `fonts`, `console` (themed on-screen terminal), `localStorage`
+  (Storage → Save Data), `Performance`, timers, `TextEncoder/Decoder` (utf-8).
 
 ## RomM endpoints used
 
-- `GET /api/roms?limit=…&offset=…` — the game list, walked page by page
-  (100 per page) until the library is exhausted. The route exists in every
-  RomM generation and doubles as the auth probe (`limit=1`).
-- `GET /api/platforms?limit=100` — the platform list (id, display name,
-  `url_logo`). One request, no paging; the dashboard's platforms row uses
-  the logo as its tile artwork (letterboxed). A server without the route
-  simply leaves the row on its cover stand-in.
+Browsing (v1–v12, still current):
+
+- `GET /api/roms?limit=…&offset=…` — the game list, walked page by page (100
+  per page) until the library is exhausted; doubles as the auth probe
+  (`limit=1`).
+- `GET /api/platforms?limit=100` — platform list (names + logos).
+- `GET /api/collections` — saved collections (5.x; absent on older servers →
+  section simply hidden).
 
 RomM versions drift in the details, and the client parses defensively:
 
 - **5.x** answers `limit`/`offset` with `{ items, total, … }`; genres and
   release date live in a `metadatum` blob; covers are local
-  `/assets/romm/resources/…` paths (the `?ts=` cache buster contains a space
-  — normalised to `%20`); screenshots ride in `merged_screenshots`.
-- **≤4.x** ignores those parameters and answers with a bare array (or a
-  `data`/`results` wrapper) of its own default page size; the client then
-  falls back to FastAPI's `_limit`/`_page`. Fields come from the older
-  `assets` object and top-level `platform`/`genres`/`release_date`.
+  `/assets/romm/resources/…` paths (the `?ts=` cache buster contains a space —
+  normalised to `%20`).
+- **≤4.x** ignores those parameters and answers with a bare array; the client
+  falls back to FastAPI's `_limit`/`_page`.
 
-The dialect is sniffed from the shape of the first page (a legacy-shaped
-sniff is discarded and the walk restarts in the legacy dialect). The walk
-stops on a short page, the reported total, a page that adds nothing new
-(a server that will not advance → `truncated`), or a 50-page safety cap.
+The dialect is sniffed from the shape of the first page. Pages are fetched
+**four at a time** (`Promise.allSettled` batches), offsets advance by the
+server's *echoed* `limit`, and the walk streams via `onPage` with an
+`AbortSignal` for cancel. **Re-validate against your instance's
+`openapi.json`** — the v1 C++ parser in the initial commit is the historical
+reference.
 
-Pages are fetched **four at a time** (`Promise.allSettled` batches): the
-network is the slow part and nx.js's `fetch` runs off the V8 thread, so the
-UI keeps its input loop and repaints while the walk is in flight, and a
-13-page library lands in three waves instead of a thirteen-step waterfall.
-Offset reservations advance by the server's *echoed* `limit` (the smallest
-seen), so a server that caps page sizes can only cause harmless overlap,
-never gaps. An `AbortSignal` cancels the walk (in-flight pages reject on
-their own) and it comes back as `{ error: 'cancelled' }`.
-**Re-validate against your instance's `openapi.json`** — the v1 C++ parser
-in the initial commit is the historical reference.
+Play (v13 — all verified live against the user's 5.4.0 instance; every route
+is 404-guarded so pre-5.x servers hide the feature):
+
+| Purpose | Endpoint |
+|---|---|
+| Rom file metadata | `GET /api/roms/{id}/files` — name, size, **`md5_hash`** (verify), `archive_members` for multi-file roms |
+| **Rom download** | `GET /api/roms/{id}/content/{file_name}` — streams the raw file; `ETag` + `Accept-Ranges` (resume); `?purpose=play` records a player load; `?file_ids=…` selects members of multi-file roms |
+| Batch zip | `GET /api/roms/download?rom_ids=…&filename=…` — server-built zip (paths mirror the server's fs layout) |
+| **BIOS** | `GET /api/firmware?platform_id=…` (`FirmwareSchema` with crc/md5/sha1 + `missing_from_fs`) · `GET /api/firmware/{id}/content/{file_name}` |
+| **Device** | `POST /api/devices` `{name, platform, client, client_version, sync_mode:"api"}` → `device_id` (uuid, persisted) |
+| **Save sync** | `POST /api/sync/negotiate` `{device_id, saves:[{rom_id, file_name, slot, emulator, content_hash, updated_at, file_size_bytes}], rom_ids:[…], emulators:[…], restore_unlisted?}` → `{session_id, operations:[{action: upload|download|conflict|no_op|delete, …}]}` |
+| Save up | `POST /api/saves?rom_id=&emulator=&slot=&device_id=&content_hash=&overwrite=` (multipart `saveFile`) |
+| Save list | `GET /api/saves?rom_id=…&device_id=…` (the `download_path` per save) |
+| Save down | `GET /api/saves/{id}/content` (octet-stream, ETag = content hash) · `POST /api/saves/{id}/downloaded` `{device_id, content_hash}` (confirms) |
+| **Save states** | `POST /api/states?rom_id=&emulator=` (multipart) · `GET /api/states?rom_id=…` · `GET /api/states/{id}/content` |
+| Play tracking | `POST /api/play-sessions` `{device_id, sessions:[{rom_id, save_slot, start_time, end_time, duration_ms}]}` · `POST /api/activity/heartbeat` `{rom_id, device_id}` — feeds the *Continue playing* row |
+| Sync bookkeeping | `POST /api/sync/sessions/{id}/complete` · `GET /api/sync/sessions?device_id=` |
+
+Save pairing is by **(rom_id, slot)**; the server compares `content_hash`
+(**MD5** — a downloaded save's md5 matched the stored `content_hash`
+byte-for-byte) and mtime to decide the action. A `null` slot is an archival
+save that never pairs.
 
 ## Directory structure
 
 ```
 rommmate/
-├─ package.json             # deps: react, react-tela, @nx.js/runtime (types)
-│                           # devDeps: esbuild, @nx.js/nro, @nx.js/nsp, typescript
+├─ package.json             # deps: react, react-tela, fflate, spark-md5, @nx.js/* (types/packagers)
 ├─ tsconfig.json
 ├─ romfs/
 │  ├─ main.js               # esbuild bundle (generated — gitignored)
@@ -115,47 +142,74 @@ rommmate/
 ├─ src/
 │  ├─ main.tsx              # entry: render(<App/>, screen); global error overlay
 │  ├─ App.tsx               # route state machine: Settings ↔ Library ↔ Detail
-│  ├─ romm.ts               # RommClient: /api/roms client — version-dialect
-│  │                        # sniffing, pagination walk, defensive field parsing
-│  ├─ config.ts             # baseUrl + token via localStorage (Save Data)
-│  ├─ mock.ts               # mocked library used by the "Demo mode" entry
-│  ├─ covers.ts             # cover URL → fetch → cache to sdmc:/… → <Image src>
-│  ├─ activity.ts           # tiny pub/sub for background work (library walk,
-│  │                        # artwork prefetch) — rendered by the top-right badge
-│  ├─ theme.ts              # colours, spacing, radii, type scale (canvas has no CSS)
-│  ├─ text.ts               # measure / wrap / truncate (react-tela <Text> cannot do it)
-│  ├─ vk.ts                 # structural type for the runtime's on-screen keyboard
-│  ├─ version.ts            # build id (stamped by tools/build.mjs)
+│  ├─ romm/                 # the RomM client (module split in v0.12)
+│  │  ├─ client.ts          #   RommClient: authenticated fetch (one-shot 401 refresh),
+│  │  │                     #   roms walk, collections, platforms — + v13: firmware, saves,
+│  │  │                     #   states, sync, devices, play-sessions, content streams
+│  │  ├─ dialect.ts         #   5.x vs ≤4.x page shapes, query builders, paging constants
+│  │  ├─ parse.ts           #   defensive field parsers (covers, genres, dates, sizes, …)
+│  │  ├─ group.ts           #   disc grouping (groupTitles, knownDiscs, discReleaseSlots)
+│  │  ├─ types.ts           #   the normalised shapes the rest of the app sees
+│  │  └─ index.ts           #   public barrel
+│  ├─ session.ts            # token acquisition per sign-in method + deduped 401 recovery
+│  ├─ auth.ts               # password grant / pairing exchange / refresh (raw fetch layer)
+│  ├─ config.ts             # baseUrl + credentials via localStorage (Save Data)
+│  ├─ covers/               # cover pipeline (v0.12 split)
+│  │  ├─ index.ts           #   SD cache, fetch queue (≤4 in flight), resolveCover/prefetchCovers
+│  │  └─ pipeline.ts        #   decode → downscale ≤640 → per-(size,fit) derive → PNG
+│  ├─ roms/                 # v13 — install side
+│  │  ├─ manifest.ts        #   sdmc:/switch/rommmate/manifest.json: installed roms, emulator,
+│  │  │                     #   cores, bios (paths, sizes, hashes, rom ids)
+│  │  ├─ download.ts        #   queue manager: stream → .part → md5 verify → rename;
+│  │  │                     #   Range-resume; progress into activity.ts
+│  │  └─ install.ts         #   per-game install/uninstall (extract small zips via fflate,
+│  │                        #   pass big archives through — RetroArch reads zips natively)
+│  ├─ retroarch/            # v13 — the emulator itself
+│  │  ├─ layout.ts          #   the SD paths (one constant table — everything else derives)
+│  │  ├─ emulator.ts        #   loader NRO + retroarch.jpg + retroarch.cfg (generated:
+│  │  │                     #   save/state/system dirs); version staleness vs server hashes
+│  │  ├─ cores.ts           #   platform→core map (user-overridable), on-demand core fetch
+│  │  └─ bios.ts            #   firmware download → retroarch/cores/system/ (hash-verified)
+│  ├─ launch.ts             # v13 — Switch.Application(title-takeover) + '-L' core + game;
+│  │                        #   writes the pending-session marker before the process leaves
+│  ├─ saves/                # v13 — save sync
+│  │  ├─ device.ts          #   one-time device registration, persisted uuid
+│  │  ├─ inventory.ts       #   walk the save/state dirs, match rom basenames, snapshot
+│  │  │                     #   (mtime/size), md5 the changed ones (spark-md5 streaming)
+│  │  └─ sync.ts            #   negotiate → execute ops → complete; conflict policy;
+│  │                        #   play-session ingest from the pending-session marker
+│  ├─ activity.ts           # tiny pub/sub for background work — the top-right badge
+│  ├─ network.ts            # nifm pre-flight + transport-error → actionable text mapping
+│  ├─ log.ts                # on-device log → sdmc:/switch/rommate.log (never secrets)
 │  ├─ errors.ts             # global error trap → on-screen FatalError
+│  ├─ text.ts / theme.ts / time.ts / version.ts / vk.ts / mock.ts / react-tela-compat.ts
 │  ├─ hooks/
 │  │  ├─ use-gamepad.ts     # rAF input loop: edge-triggered buttons, auto-repeat, stick
 │  │  ├─ use-drag-scroll.ts # touch drag → scroll offset
 │  │  ├─ use-canvas-tap.ts  # tap (touch or mouse) → logical canvas coordinates
+│  │  ├─ use-text-entry.ts  # field editing: system keyboard, silent-failure detection,
+│  │  │                     #   built-in-keyboard fallback (v0.8.2)
 │  │  └─ use-tick.ts        # coarse interval re-render (loading feedback)
+│  ├─ lib/
+│  │  └─ library-filters.ts # search/platform chip rules (pure, preview-tested)
 │  └─ components/
-│     ├─ Header.tsx         # title + status line + build stamp (shared by every screen)
-│     ├─ HintBar.tsx        # context sensitive button hints (shared)
-│     ├─ LibraryGrid.tsx    # the library screen: filter bar + cover grid
-│     ├─ CoverTile.tsx      # <Image> cover + <Text> title, focus ring
-│     ├─ CoverImage.tsx     # <Image> with a safe failure mode (placeholder instead of a crash)
-│     ├─ FilterBar.tsx      # platform chips + search chip, horizontally scrollable
-│     ├─ GameDetail.tsx     # artwork, screenshot, metadata, summary
-│     ├─ InAppKeyboard.tsx  # built-in QWERTY, used when the system keyboard is unavailable
-│     ├─ Spinner.tsx        # tick-driven dots: "something is loading"
-│     ├─ EmptyState.tsx     # "nothing here" placeholder
-│     ├─ SettingsScreen.tsx # baseUrl / token entry + "Demo mode" row (B cancels)
-│     ├─ ActivityBadge.tsx  # top-right toast: what background work is in flight
-│     └─ FatalError.tsx     # last-resort error screen
+│     ├─ Header.tsx / HintBar.tsx / Spinner.tsx / EmptyState.tsx
+│     ├─ ActivityBadge.tsx  # top-right toast (walk, artwork, downloads, sync)
+│     ├─ LibrarySections.tsx / dashboard/section-rows.ts   # the five-row dashboard
+│     ├─ LibraryGrid.tsx / CoverTile.tsx / CoverImage.tsx / FilterBar.tsx
+│     ├─ GameDetail.tsx     # + v13 rows: Play / Install / Sync saves / Uninstall
+│     ├─ Downloads.tsx      # v13 — the queue screen (progress, pause, cancel, resume)
+│     ├─ SyncReport.tsx     # v13 — n uploaded, m downloaded, conflicts
+│     ├─ SetupDoctor.tsx    # v13 — emulator/cores/BIOS/server-features checklist,
+│     │                     #   WebApplet deep-links to the RomM web UI for uploads
+│     ├─ SettingsScreen.tsx # credentials + sign-in method + keyboard + v13: core picks,
+│     │                     #   auto-sync toggle, hidden (tooling) platforms
+│     ├─ InAppKeyboard.tsx  # built-in QWERTY fallback
+│     └─ FatalError.tsx
 ├─ tools/
 │  ├─ build.mjs             # esbuild → romfs/main.js + build id stamping
-│  └─ preview/              # browser preview harness (dev-only, not shipped)
-│     ├─ entry.tsx          # renders the real app into a <canvas>, fakes gamepad + keyboard
-│     ├─ build.mjs          # esbuild bundle for the harness
-│     ├─ raf-shim.ts        # headless Chrome only paints one frame — keep rAF alive
-│     ├─ shot.mjs           # CDP screenshot at a real-time offset (mid-download states)
-│     ├─ click.mjs          # CDP mouse click at a point, reads the title trace (drives the touch path)
-│     ├─ proxy.mjs          # CORS proxy in front of a real RomM instance (the preview can't hit it directly)
-│     └─ bands.mjs / probe.mjs / ascii.mjs   # layout inspection from the terminal
+│  ├─ nettest/              # standalone network diagnostic NRO (v0.10)
+│  └─ preview/              # browser preview harness (see below) + mock RomM
 └─ (output) rommate.nro / rommate.nsp
 ```
 
@@ -163,380 +217,189 @@ rommmate/
 
 - `render(<App/>, screen)` from `react-tela/render` — React tree drawn onto the
   runtime's screen canvas; no DOM assumed.
-- **Grid**: compute a rows×cols tile layout in JS; emit only the rows that
-  intersect the viewport (row culling) and mask the overflow with two opaque
-  bands. `<Group>` is deliberately unused — it renders into an offscreen canvas
-  and composites back with `drawImage()`, and a failure there aborts the frame
-  (it is what made the settings rows invisible in v0.2).
-- **Navigation**: poll the Web Gamepad in a `requestAnimationFrame` loop →
-  grid focus (d-pad/stick), A = select, B = back, plus `onTouchMove` drag
-  scrolling. Model the interaction code on `switch-nsp-forwarder`'s
-  `src/hooks` + `src/components`.
-- **Focus ring**: rounded `<Rect>` stroke around the focused tile (react-tela
-  has no built-in focus engine — that's our `gamepad.ts` job).
-- **Cover art**: `covers.ts` resolves RomM asset URLs, `fetch()`es the bytes,
-  writes them to an `sdmc:` cache dir via `Switch.writeFile`, then the tile
-  renders `<Image src="sdmc:/…">` (async load, placeholder until ready).
-- **Exit**: NSP-installed → the Home button suspends the app natively. No
-  custom quit needed.
+- **Grid**: rows×cols computed in JS; only viewport rows rendered (row culling),
+  overflow masked with two opaque bands. `<Group>` is deliberately unused — it
+  renders into an offscreen canvas and a failure there aborts the frame.
+- **Navigation**: Web Gamepad polled in a `requestAnimationFrame` loop (d-pad/
+  stick grid focus, A select, B back) + touch drag scrolling; the v0.12
+  `src/gamepad/loop.ts` owns the loop, `hooks/use-gamepad.ts` the hook.
+- **Focus ring**: rounded `<Rect>` stroke around the focused tile.
+- **Cover art**: `covers/` fetches with the API token, caches on the SD (a
+  ≤640 px master, then one derived file per drawn size/fit), and renders
+  `<Image src="sdmc:/…">` with a placeholder until ready.
+- **Exit**: NSP-installed → the Home button suspends the app natively.
+
+## v13 — Play: downloads/launch/sync
+
+**Goal**: from the Switch, with the RomM server as the single source of truth
+for games, BIOS and the emulator itself — play, and never lose progress.
+
+### The loop
+
+```
+Detail screen
+ ├─ "Play" ─► ensure core + BIOS present ─► write pending-session marker
+ │           ─► Switch.Application('sdmc:/switch/retroarch_switch.nro')
+ │                   .launch('-L', corePath, gamePath)      [process replaced]
+ ├─ (user plays in RetroArch, Home, re-opens RomMmate)
+ └─ app boot: marker? ─► ingest play session (durations → Continue row)
+                       ─► save sync: snapshot-diff → md5 changed files
+                       ─► /api/sync/negotiate ─► upload / download /
+                           delete / conflict (dialog: keep mine · take theirs)
+                       ─► save states: newest-wins per (rom, emulator)
+                       ─► complete sync session
+```
+
+### SD layout (all constants in `src/retroarch/layout.ts`)
+
+```
+sdmc:/switch/rommmate/              # app data: manifest.json, pending-session.json, rommate.log
+sdmc:/switch/retroarch_switch.nro   # RetroArch loader (from RomM), + sdmc:/retroarch.jpg
+sdmc:/retroarch/retroarch.cfg       # generated by us: save_directory=sdmc:/rommmate/saves,
+                                    #   state_directory=sdmc:/rommmate/states,
+                                    #   system_directory=sdmc:/retroarch/cores/system
+sdmc:/retroarch/cores/*.nro         # cores (from RomM, per platform, on demand)
+sdmc:/retroarch/cores/system/*.bin  # BIOS (from RomM firmware, e.g. PS1 scph1001.bin)
+sdmc:/rommmate/roms/<platform>/<fs_name>   # downloaded roms (small zips auto-extracted,
+                                            #   big archives passed through as-is)
+sdmc:/rommmate/saves/  +  sdmc:/rommmate/states/   # RetroArch writes here; we sync from here
+```
+
+Save files are discovered by **basename match** with the installed rom
+(`<rom-base>.srm/.mcr/.mbc/.nvram/.bflash/…` in the cfg's save/state dirs) —
+deterministic because *we* generate the cfg. RetroArch version/asset staleness
+is tracked by the server file's hash/size/last-modified, never by name.
+
+### One-time server setup (RomM web UI — the Setup/doctor screen guides this)
+
+1. Platform **"RetroArch"** (e.g. `roms/retroarch`) containing:
+   - `retroarch-loader.zip` — the official bundle's `switch/` folder + `retroarch.jpg`
+   - the **curated core NROs** for the library's platforms: FCEUmm (NES) ·
+     Snes9x 2010 (SNES) · Gambatte (GB/GBC) · mGBA (GBA) · Mupen64Plus Next
+     (N64) · DeSmuME (NDS) · Beetle PSX (PS1) · PPSSPP (PSP) · DOSBox SVN (DOS)
+2. **Firmware**: PS1 `scph1001.bin` (the only BIOS the library's emulable
+   platforms need).
+3. The "RetroArch" platform is hidden from the dashboard via a settings toggle
+   (it is tooling, not games).
+
+**Decided (2026-10):** curated cores over the full bundle (small Switch
+footprint, downloaded per platform on first need) · sync covers saves **and**
+save states · all four capabilities ship in one phased iteration.
+
+**Not emulable on Switch** (no official cores): PS2/3/4, PS Vita, Wii,
+Switch titles — those platforms stay browse/download-only and wear a
+"no compatible core" badge.
+
+### Phases
+
+0. **Spike** — a tiny dev NRO that `Application.launch`es a test NRO with args
+   (title takeover + arg passing is the one unverified runtime behaviour);
+   plus an fflate/spark-md5 smoke test under the app regime.
+1. **Emulator provisioning** — `src/retroarch/`: loader+cfg+assets install,
+   core map + on-demand core fetch, BIOS download (hash-verified), SD
+   free-space guard (`Switch.FileSystem.openSdmc().freeSpace()`).
+2. **Rom downloads + Play** — `src/roms/download.ts` queue (stream → `.part` →
+   MD5-verify → rename; Range-resume; cancel/pause; progress badge) + detail
+   rows *Install*/*Play*/*Uninstall*; `src/launch.ts` (marker → launch; on
+   preview the row is inert).
+3. **Save sync** — `src/saves/`: device registration, inventory + snapshot
+   diff, negotiate/execute/complete, states newest-wins, conflict dialog,
+   auto-sync on boot after a play session, manual *Sync saves* per game +
+   *Sync all*.
+4. **Polish** — Setup/doctor screen (WebApplet deep-links), core picker,
+   unsupported-platform badges, mock RomM gains every v13 endpoint in the
+   preview harness, PLAN.md stamp.
+
+### Risks
+
+- **`Application.launch` arg passing** unverified on real hardware → the
+  spike; if args don't reach the NRO, fall back to baking a per-game
+  `retroarch.cfg` (`libretro_path` + content) and launching with no args.
+- **32-bit heap**: nothing ≥ a few MB may live in V8 — every big transfer
+  streams through `res.body` → `FsFile.writable` in chunks; zips over ~8 MB
+  are passed through (RetroArch opens archives natively) rather than
+  in-memory extracted.
+- **RomM drift**: all v13 routes are 5.x — the client 404-probes them once at
+  connect and the UI hides what the server lacks (same discipline as
+  collections/platforms).
+- **SD space**: a Wii/PS2 ISO is multi-GB; every queue and every provisioning
+  step checks `freeSpace()` up front and mid-download.
+- **RetroArch version lockstep**: loader and cores must match (a 1.14-era
+  `libretro_path` bug); we install the *set* the user uploaded together and
+  re-fetch when any file's server hash changes.
 
 ## Build & run
 
-1. **Scaffold**: `npx create-nxjs-app` (pick the canvas/hello-world template,
-   NSP option) → rename to `rommate`; `npm i react react-tela`.
+1. **Scaffold** (done): `npx create-nxjs-app` → `rommate`; `npm i react react-tela`.
 2. **Build**: `npm run build` (esbuild → `romfs/main.js`) → `npm run nsp`
    (slim NSP) or `npm run nro` for drop-in dev builds.
 3. **Install**: copy `rommate.nsp` to the Switch, install via Atmosphere
-   (`nsps/`), launch from the homescreen → application mode.
-   - First launch: the slim bootstrap auto-downloads the shared nx.js runtime
-     to `sdmc:/nx.js/` (needs Wi-Fi once) — or pre-place the release NRO there.
-4. **Configure**: in-app Settings screen writes `baseUrl` + `token`
-   (`rmm_…`) to `localStorage` (Save Data) — no more hand-editing an SD
-   `config.json`. The last row is **Demo mode**: it skips the login entirely
-   and opens the library with a mocked catalogue (`src/mock.ts`), so the app
-   can be driven without a reachable RomM server.
-5. Dev loop: `npm run nro` → drop in `sdmc:/switch/` → homebrew menu (applet
-   mode: works, CPU raster — fine for UI iteration; use the NSP for perf).
-
-## Risks / open items
-
-- **react-tela is explicitly in development** ("expect breaking changes") →
-  pin an exact version in `package.json`; upstream is same-author, actively
-  maintained, and proven by the NSP forwarder.
-- **nx.js is 1.0.0-beta** → pin `[runtime] version`; multiple runtime versions
-  coexist on the SD, each app picks the highest compatible.
-- **Gamepad button indices** — confirm the Web Gamepad index ↔ Switch button
-  mapping (it lives in the runtime's `gamepad.cc`; cross-check the forwarder's
-  hook).
-- **WASM** (only if we adopt `@react-tela/flex`/Yoga later): needs JIT — fine
-  in application mode; would need `[v8] wasm = on` + memory in applet mode.
-  v1 avoids it via manual grid layout.
-- **Cover-art URL shape** drifts across RomM versions → defensive parse, check
-  your instance's `openapi.json` (v1's open risk, carried over).
-- **Bundle/heap**: React + react-tela is small, but keep an eye on the V8 heap
-  in applet mode if we ever ship NRO-only (`[memory] heap_limit` clamps there).
+   (`nsps/`), launch from the homescreen → application mode. First launch
+   auto-downloads the shared nx.js runtime to `sdmc:/nx.js/` (needs Wi-Fi once).
+4. **Configure**: Settings screen (baseUrl + one of three sign-in methods:
+   API token / password grant / pairing code). **Demo mode** opens a mocked
+   library without a server.
+5. Dev loop: `npm run nro` → `sdmc:/switch/` → homebrew menu (applet mode,
+   CPU raster — fine for UI iteration; use the NSP for perf).
+6. v13 on the box: the Setup/doctor screen drives the one-time RetroArch +
+   BIOS uploads; everything after is in-app.
 
 ## Browser preview harness (dev-only)
 
-The app is a canvas app, so "does this look right?" is a question a
-screenshot answers better than a mental model. `tools/preview/` renders the
-**real** `src/` components into a `<canvas>` in a normal browser:
+`tools/preview/` renders the **real** `src/` components into a `<canvas>` in a
+browser:
 
 - `?view=demo|filter|empty|detail|spinner` — a starting state per screen.
-- `?sim=Up,A,B` — simulated button presses (the harness installs a fake
-  Web Gamepad and a fake on-screen keyboard; `?vktext=mario` pre-fills the
-  search field).
-- `?cover=<url>` overrides every tile's artwork URL, so the fetch/cache
-  path can be exercised against an endpoint of our choosing.
-- `?base=<url>` (plus `?token=<…>`) seeds the saved credentials with a
-  running RomM and auto-connects, so the *live* app can be driven in the
-  browser. Point it at `proxy.mjs` rather than at the instance itself: a
-  real RomM answers without `access-control-allow-origin`, so Chrome blocks
-  the direct fetch (the Switch app is unaffected — nx.js's fetch has no
-  CORS). `node tools/preview/proxy.mjs` reads the `url` from `.env` and
-  forwards everything, adding the CORS headers; the request log makes the
-  pagination walk visible.
-- The trace of what the app did is mirrored into the document title, and
-  `bands.mjs` / `probe.mjs` / `ascii.mjs` read the screenshot back, so the
-  layout can be checked from the terminal. `shot.mjs` takes a screenshot at
-  a chosen *real-time* offset over the DevTools protocol — the only way to
-  capture a state that depends on a fetch still in flight.
+- `?sim=Up,A,B` — simulated buttons (fake Web Gamepad + keyboard).
+- `?cover=<url>` overrides tile artwork; `?base=<url>&token=…` seeds
+  credentials against a real RomM via `proxy.mjs` (CORS; the Switch app is
+  unaffected — nx.js's `fetch` has no CORS).
+- The trace is mirrored into the document title; `bands.mjs`/`probe.mjs`/
+  `ascii.mjs` read screenshots from the terminal; `shot.mjs` takes real-time
+  offsets over CDP; `click.mjs` drives the touch path; `?fkbd=1|2` simulates
+  the two silent system-keyboard failures.
 
-Two headless-Chrome quirks are worth knowing: it only paints **one**
-animation frame per load (so the harness shims `requestAnimationFrame` with a
-timer), and Chrome has its **own** `navigator.virtualKeyboard` (so the
-harness replaces it rather than checking for its presence). A third: virtual
-time **pauses while a network fetch is in flight**, so `--virtual-time-budget`
-screenshots only ever land *after* every request has settled.
+v13 extends the mock (`src/mock.ts` + the preview's fetch stub) with every new
+endpoint: content streams (incl. `Accept-Ranges`), the batch zip, firmware,
+saves/states, sync negotiate (hash-matching semantics), devices, and
+play-sessions — so the whole Play loop, including a faked RetroArch
+save-file drop, runs in the browser before it touches the box.
 
-## Next iteration
+Headless-Chrome quirks worth knowing: it paints **one** animation frame per
+load (the harness shims `requestAnimationFrame` with a timer); Chrome's own
+`navigator.virtualKeyboard` is replaced, not detected; and virtual time
+**pauses while a fetch is in flight** (so `--virtual-time-budget` screenshots
+only land after every request settles).
 
-Done in v0.5:
+## Risks / open items (standing)
 
-- Library screen with a filter bar (platform chips) and a search field that
-  opens the runtime's on-screen keyboard.
-- Game detail screen (cover, screenshot, metadata, summary) on A-press,
-  with a loading indicator while its cover is still on its way.
-- Cover art is fetched with the API token, cached on the SD card, and drawn
-  from the local copy.
-- Shared `Header` / `HintBar` / `EmptyState` / `Spinner` / theme tokens.
-
-Done in v0.6:
-
-- Lazy artwork prefetch: the grid warms the cover cache for the rows around
-  the viewport (and the focused tile's screenshot), so artwork is usually
-  ready by the time its row scrolls into view.
-- `shot.mjs`: real-time-offset screenshots via the DevTools protocol, for
-  states that depend on an in-flight fetch.
-
-Done in v0.7:
-
-- RomM 5.x support: the API moved — `/api/library` (the old auth probe) is
-  gone, the list comes back as `{ items, … }`, and genres / release date /
-  cover / size moved to new field names. The client sniffs the dialect from
-  the first page and parses both generations.
-- Whole-library pagination: the client walks `/api/roms` 100 roms per page
-  (a `_limit`/`_page` fallback for ≤4.x, duplicate-page detection, a safety
-  cap) and reports progress per page — verified against a real 5.4.0
-  instance with 1266 roms.
-- `proxy.mjs` + `?base=`/`?token`: the preview can now browse a real library
-  through a local CORS proxy.
-
-Done in v0.8:
-
-- Non-blocking startup: the library walk runs in **parallel batches of four**
-  pages (the 13-page 1266-rom library now lands in ~14s instead of ~27s), and
-  nx.js's `fetch` runs off the V8 thread, so the event loop, status line, and
-  gamepad polling stay live the whole time.
-- **Cancel**: the walk takes an `AbortSignal`; B on the settings screen
-  aborts it (the row reads `connecting… · B to cancel`), and a generation
-  counter makes a late walk unable to stomp state the user has left — the
-  "press Demo mid-load and get stomped when it completes" bug is fixed.
-- **Background-activity badge** (top-right, every screen): a tiny React-free
-  pub/sub (`activity.ts`) that the library walk and the artwork prefetch report
-  into, rendered by `ActivityBadge` via `useSyncExternalStore`. It shows e.g.
-  `Library 900 / 1266` while the walk runs and `Artwork N downloading` while
-  covers stream in, and is unmounted entirely when idle. No timers — it only
-  repaints when a label actually changes.
-
-  (nx.js has no `Worker` — it is a single V8 thread — so "background" here
-  means off the input/repaint path, which the network work already is.)
-
-Done in v0.8.1:
-
-- Touch on the settings screen: tapping a row does what A on that row does
-  — the Switch is a touchscreen and a finger is the primary pointer. Tapping
-  a field while a connection is in flight cancels the walk and opens the
-  keyboard pre-filled: with saved credentials the app auto-connects on
-  launch, so that is the only way to fix a fat-fingered URL without waiting
-  the walk out.
-- `use-canvas-tap` hook (canvas `touchstart`/`mousedown`, structural event
-  types, ref-stable callback — same pattern as `use-drag-scroll`) and
-  `click.mjs` (CDP mouse click + title-trace readout, for driving the touch
-  path from the terminal).
-
-Done in v0.8.2:
-
-- **Built-in keyboard fallback**: the runtime's system keyboard fails in two
-  silent ways on some setups — the object creation throws, or the appear
-  call fails and the bounding rect stays zero. Both are now detected
-  (creation error surfaced, rect re-checked 1.2s after `show()`), and the
-  in-app `InAppKeyboard` (compact QWERTY + digits + symbols, gamepad and
-  touch driven) takes over the bottom of the screen so the Base URL / API
-  Token fields stay editable no matter what. If the system keyboard does
-  appear, it is used as before and the fallback never shows.
-- `?fkbd=1|2` preview harness knobs simulate both failure modes.
-
-Done in v0.10:
-
-- **Three sign-in methods**, cycled by a new "Sign in with" row on the
-  settings screen (`config.ts` grew `authMethod` + per-method fields; the
-  credential rows below follow the method):
-
-  - *API token* — the original flow, a RomM Client API Token typed in
-    directly.
-  - *Password grant* — username + password exchanged via the OAuth2
-    password grant (`POST /api/token`, `auth.ts`). The access token is
-    short-lived, so it is renewed through its refresh token (RomM rotates
-    them) — proactively ~60 s before `tokenExpiresAt`, and transparently
-    when a request 401s mid-walk: `RommClient` retries such a request
-    once via its `onRefresh` callback, and concurrent 401s (the walk fires
-    pages in parallel) share a single, deduplicated refresh. A dead
-    refresh token falls back to the full password grant once.
-  - *Pairing code* — a short code from the web UI's Client API Tokens
-    page, exchanged via `POST /api/client-tokens/exchange` for a client
-    API token. The resolved token is persisted (the code is single-use)
-    and re-exchanged if the server later 401s it.
-- The password masks with dots at rest and in the built-in keyboard's echo
-  (a new `mask` prop on `InAppKeyboard`); the API token keeps its partial
-  mask. `SwkbdType` has no password layout, so the *system* keyboard
-  cannot mask — the built-in Keyboard setting is the private option.
-- Verified end-to-end in the preview against a mock RomM: the password
-  grant → probe → walk sequence, and the 401 → refresh grant → retried
-  request sequence (request logs checked byte for byte). `?auth=
-  password|pairing` seeds the settings screen in either method.
-- **On-device log** (`src/log.ts` → `sdmc:/switch/rommate.log`): the
-  connection flow appends one line per event — method and base URL, each
-  token exchange, the probe, the walk, every failure — never a secret.
-  (The runtime's own diagnostics live in `sdmc:/nxjs-debug.log`; the
-  app's `console` is the on-screen terminal and does not survive a
-  reboot.)
-- **Network pre-flight** (`src/network.ts`): with no active connection
-  the Switch's resolver rejects *every* lookup — even a plain
-  `10.x.x.x` literal — with `Address family for hostname not
-  supported`, before a single packet is sent. The app now reads the
-  IP config from nifm first and refuses up front with "not connected
-  to a network — check Wi-Fi in System Settings". The console's own IP
-  is recorded in the connect log line, and transport errors are mapped
-  to actionable status text (raw-IP rejected → "use a DNS name in Base
-  URL", DNS failed, refused, timed out); the raw error always stays in
-  the log.
-- **Artwork memory fixes** (`src/covers.ts`), after the on-device
-  `RangeError: Out of memory (failed to allocate …)` — a native
-  `malloc` failure (`nx_alloc`) hit while navigating: the SD cache was
-  checked *after* downloading, so every cover was re-pulled in full on
-  every launch; downloads were unbounded (a fast scroll stacked dozens
-  of in-flight file buffers); and the cache kept full-resolution art,
-  whose decoded RGBA copy nx.js's `drawImage` holds per mounted tile
-  (a large scan ≈ tens of MiB each, against a 216×288 draw size).
-  Now: SD hit checked before the network (each artwork is pulled from
-  RomM once, ever — legacy extension-labelled files still honored),
-  a 4-download concurrency cap, and first-fetch downscale to ≤640 px
-  (decode via a `blob:` URL → `OffscreenCanvas` → `convertToBlob`
-  PNG; any failure falls back to caching the original bytes — the
-  decoder sniffs content, so the extension is only a label).
-- **Streaming library load**: the walk is no longer all-or-nothing.
-  `RommClient.getGames` takes an `onPage(batch)` callback that fires per
-  page (first page first, including an empty one) — App switches to the
-  library as soon as the first chunk arrives and appends each later
-  batch, while the header counts up (`Loading library… 400 / 1266`). A
-  mid-walk failure keeps whatever already arrived (the grid stays
-  browsable; the status says "Library incomplete") instead of discarding
-  it. With a stored credential the app now starts *on the library* from
-  the first frame (a spinner + "Connecting to RomM…" where the empty
-  state would mislead), falling back to the settings screen only when
-  the connection dies before the first page. The top-right activity
-  badge shows the walk's completion (`Library 37%` with a small dot
-  spinner, cleared at 100%). `?connect=0` previews the settings screen
-  despite seeded credentials.
-- **Standalone debug NRO** (`tools/nettest/` → `npm run nro:nettest` →
-  `romm-nettest.nro`): plain-JS nx.js app (no build step — edit
-  `romfs/main.js`, repackage) that meters the network stack in 10
-  stages (11 with the opt-in UDP probe): nifm IP config,
-  target-vs-console subnet note, `resolveDns` of the raw-IP target
-  (the bug path — reproduced verbatim under Ryujinx too), `resolveDns`
-  of the server's DNS name (`harinaldibologna.duckdns.org`, the
-  workaround path — names resolve while numeric literals get
-  `Address family…`), `resolveDns(example.com)`, TCP connect by DNS
-  name (the "ping"), TCP connect by raw IP (the contrast), HTTP GET
-  and RomMmate's exact `POST /api/client-tokens/exchange` via the DNS
-  name, plus a WAN check — with `stages ok: N/10` plus hints naming
-  the failing layer (including EAGAIN socket-exhaustion). An 11th
-  stage (raw UDP-socket DNS round-trip to the console's DNS server,
-  separating "TCP refused" from "the whole socket layer is down") is
-  opt-in via `udp=1`: enabled, it hard-crashed the process under
-  Ryujinx's incomplete bsd socket emulation (log stops mid-stage, no
-  JS error — native crash in the uv_poll layer; nx.js's udp.cc
-  registers a second uv_poll_t on the same fd for sendto), so it is
-  off by default and intended for real hardware only. Config via
-  `sdmc:/switch/romm-test.txt` (`host=`/`port=`/`name=`/`url=`/`udp=`);
-  every line also appends to `sdmc:/switch/romm-test.log`. Screen output
-  via the runtime terminal; any button re-runs, + exits. Smoke-tested
-  offline under Node with stubbed `Switch` globals (healthy/offline/
-  numeric/config scenarios all behave; `numeric` reproduces the
-  device's current state — names fine, raw IPs rejected).
-- Fix (found on device): the auth exchanges joined the Base URL without
-  the schemeless-URL normalisation `RommClient` has, so a typed
-  `host:port` made `POST /api/token` resolve *relatively* — against
-  `romfs:` — and nx.js answered `GET method must be used when fetching
-  "romfs:" protocol (got POST)`. The normalisation now lives in one
-  exported `normalizeBaseUrl()` shared by both, and an empty Base URL is
-  refused up front ("Base URL is required") instead of being fetched
-  relative.
-
-Done in v0.11:
-
-- **Library dashboard** (`src/components/LibrarySections.tsx`): the
-  library opens on five horizontal rows in a fixed order — continue
-  playing (by last played), favourites, platforms (one representative
-  cover per platform, with its game count), recently added, collections
-  (the server's saved collections). Empty rows collapse; a row label
-  opens the row's full grid, a cover opens its content. It is the face
-  of the streamed library load from v0.10: rows fill in progressively
-  as pages arrive, and a row that re-sorts mid-stream moves its tiles.
-- **Multi-disc titles**: the client groups the roms of one title
-  (`groupTitles`); a tile shows the release name and a top-left `2/3`
-  disc badge, and A opens a new disc picker (`DiscPicker`, one row per
-  disc, the default disc marked, B closes) before opening content.
-- **react-tela compat layer** (`src/react-tela-compat.ts`): the
-  library's `Root.insertBefore` splices without dispatching an `add`
-  event, so when React re-inserts a tile it moved, an artwork load
-  aborted mid-decode has nothing to restart it — the tile would sit on
-  its placeholder forever. The patch dispatches `add` after the
-  splice, and `CoverImage` re-kicks the load on a post-mount `add`
-  (by then the bytes are local, so it is a cheap re-decode).
-- **Dashboard cover z-order fix** — the last real-data bug: 3 of the
-  29 dashboard covers rendered dark on the real box. Root cause pinned
-  at the op level with the preview probe: on each dark tile, one render
-  pass drew the hairline stroke, then the cover image (the tile lit),
-  then an opaque plate fill — the plate *painting over the loaded
-  artwork*. Mechanism: React moves a re-sorted tile by re-inserting
-  each child with `insertBefore(child, newPredecessor)`, and
-  react-tela's plain splice places every child before that predecessor,
-  so a moved block of siblings lands **fully reversed** in
-  `Root.entities` (array order *is* paint order). The three dark
-  tiles were exactly the three whose entities moved mid-stream; the
-  twenty-six that never moved kept JSX order and stayed lit. The fix
-  is in app code (react-tela stays as-is, no offscreen `<Group>`):
-  the plate is merged into the border rect — one rect drawn *after*
-  the image whose fill is the dark plate only while the artwork is
-  absent (`CoverImage`'s `onStatus`, or no cover at all) and
-  transparent once it lands, with the placeholder glyph unmounting at
-  the same moment. A transparent frame cannot hide the artwork in
-  *either* z-order, so the tile renders correctly whether the block
-  landed in JSX order or reversed. Applied to every rendering with the
-  pattern: the dashboard rows (a small `CoverSlot` per cover), the
-  grid's `CoverTile`, and the detail screen's cover block.
-- **Real-box verification**: preview against the user's live RomM
-  (CORS proxy, stored token) with the 1266-rom library — all 29
-  dashboard covers lit after the fix (pixel-scan probe: 29/29 above
-  the lit threshold; the three reversed tiles included, still lit
-  with the merged rect landing *before* their image in the array),
-  plus the disc badge / picker / detail screen. Fat NRO rebuilt and
-  re-staged.
-
-Done in v0.12:
-
-- **Container-resolution artwork** (`src/covers.ts`): the on-device cache
-  was one file per URL, capped at 640 px on the long edge — the size for
-  the *grid*. The dashboard draws the same bytes at 108×144, so every
-  drawn cover kept a ~1.1 MiB RGBA copy of a 427×640 bitmap that
-  `drawImage` resampled down to a tenth of its size, every frame. The
-  cache is now two levels: the 640-px master stays the on-disk source of
-  truth (existing SD files keep working — no re-download), and on top of
-  it one file per (size, fit) the app actually draws is derived from it
-  (`<hash>-<w>x<h>.png`, `-c` for contain). A dashboard cover now decodes
-  to exactly 108×144 (~60 KiB RGBA, ~20× less) and paints 1:1; the grid
-  and detail derive their own sizes from the same master. Any step of the
-  derivation failing falls back to the master — a big cover still beats a
-  missing one. `resolveCover`/`prefetchCovers` take the box they are
-  drawing into, and the artwork identity (the dedupe key) is
-  url+size+fit.
-- **`contain` fit**: react-tela's `<Image>` stretches its source to the
-  whole box and cannot letterbox, so a fit whose aspect differs is baked
-  into the bytes by the same pipeline (image centred on a transparent
-  box). The browser preview runs it for the one case it matters in
-  (platform logos); the cover fit skips the re-encode there (the browser
-  resamples natively, exactly as the `<Image>` would).
-- **Platform icons** (RomM-web look): the platforms row previously used a
-  random member cover, which read as unrelated games. It now joins the
-  platform ids with `GET /api/platforms` and draws the platform's own
-  logo (`icon_url`, else the IGDB `url_logo`), letterboxed; a platform
-  the server reports no logo for falls back to a member cover. The
-  artwork token is scoped to the instance base URL — it is never sent to
-  external hosts (IGDB), which also keeps the preview's CORS preflight
-  from failing. On the Switch the logos need internet (they live at
-  images.igdb.com); without it those tiles keep their placeholder glyph
-  until a fetch succeeds.
-- **Favourites disc badge** (`src/romm.ts`): a favourites walk fetches
-  only the favoured roms, so a multi-disc release arrived with one real
-  disc plus sibling *stubs*, and the tile badge (built from
-  `discs.length`) never showed. Titles now carry `knownDiscs` (the full
-  release count, stubs included) and `discReleaseSlots` (each real disc's
-  1-based position within the release); the badge shows the disc's
-  release slot over the known total, so the same disc wears the same
-  number in every row — a 4-file Legend of Dragoon shows 4/4 in Continue
-  and in Favourites alike. The disc picker keeps listing real discs only.
-- **Real-box verification**: live preview against the user's instance —
-  platform logos letterboxed in the row (Nintendo, SNES, Wii, DOS, …),
-  1/4→4/4 badges consistent between Continue and Favourites, all covers
-  lit, no dark or reversed tiles.
-
-Still open:
-
-- `WebSocket` live updates (library changes) — the runtime has it.
-- The *API token* sign-in is now validated end-to-end against a real
-  instance (v0.11 real-box run). The password grant and pairing
-  exchange remain written against RomM 5.x's API surface, not yet run
-  against a live server — re-validate them against your instance's
+- **react-tela is explicitly in development** → pinned; upstream is
+  same-author and proven by the NSP forwarder.
+- **nx.js is 1.0.0-beta** → pinned `[runtime] version`; multiple runtime
+  versions coexist on the SD.
+- **WASM** (only if we adopt `@react-tela/flex`/Yoga later): needs JIT —
+  fine in application mode. v1 avoids it via manual layout.
+- **Cover-art URL shape** drifts across RomM versions → defensive parse
+  (`#absUrl` normalises the space-bearing `?ts=` buster).
+- **`WebSocket` live updates** (library changes) — the runtime has it; not
+  used yet.
+- **Password grant / pairing exchange** are written against the 5.x surface
+  (the API-token method is validated on the real box); re-check against
   `openapi.json` when convenient.
+
+## Changelog
+
+The long-form notes lived here through v0.12; the git history keeps the detail.
+
+| Version | What landed |
+|---|---|
+| v0.5 | Library screen (platform chips, search via on-screen keyboard), game detail, cover fetch→SD cache→`<Image>`, shared Header/HintBar/EmptyState/Spinner/theme |
+| v0.6 | Lazy artwork prefetch for rows around the viewport; `shot.mjs` real-time-offset screenshots |
+| v0.7 | RomM 5.x dialect (shape sniffing; `/api/library` is gone), whole-library pagination (1266 roms on 5.4.0), `proxy.mjs` + `?base`/`?token` live preview |
+| v0.8 | Parallel page batches of 4 (~14 s instead of ~27 s), walk cancel via `AbortSignal`, background-activity badge (pub/sub + `useSyncExternalStore`) |
+| v0.8.1 | Touch on the settings screen (tap = A), `use-canvas-tap`, `click.mjs` |
+| v0.8.2 | Built-in keyboard fallback for the two silent system-keyboard failures, `?fkbd` harness knobs |
+| v0.10 | Three sign-in methods (token / password grant + rotated refresh / pairing code) with deduped 401 recovery; on-device log; nifm network pre-flight + actionable error mapping; artwork memory fixes (SD-first, 4-way fetch cap, ≤640 px downscale); streaming library load; `tools/nettest` diagnostic NRO; shared `normalizeBaseUrl` |
+| v0.11 | Five-row library dashboard (continue/favourites/platforms/recent/collections), multi-disc titles + disc picker, react-tela `insertBefore` compat patch, dashboard z-order fix (plate merged into the border rect) |
+| v0.12 | Container-resolution artwork (per-size derived cache, `contain` fit), platform-logo row, favourites disc badge (`knownDiscs`/`discReleaseSlots`), build-id stamping, module refactor (`session.ts`, `romm/`, `covers/`, `gamepad/`, `lib/`, `dashboard/`) |
+| **v13** | **Play: rom downloads, RetroArch + BIOS + cores from RomM, in-game launch, save + state sync** (this plan) |
