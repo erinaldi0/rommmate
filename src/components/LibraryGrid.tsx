@@ -11,7 +11,7 @@ import { SwkbdType } from '@nx.js/constants';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
 import { useDragScroll } from '../hooks/use-drag-scroll';
 import { getVirtualKeyboard } from '../vk';
-import { prefetchCovers } from '../covers';
+import { prefetchCovers, type CoverRequest } from '../covers';
 import { BUILD_ID } from '../version';
 import { colors } from '../theme';
 import { CoverFocusRing, CoverTile, TITLE_BLOCK_H } from './CoverTile';
@@ -188,21 +188,24 @@ export function LibraryGrid({
 	useEffect(() => {
 		const first = Math.max(0, Math.floor(scrollTop / TILE_H) - 1);
 		const last = Math.min(rows - 1, Math.floor((scrollTop + VIEW_H - 1) / TILE_H) + 2);
-		const urls: string[] = [];
+		// Each request carries the box its artwork is drawn into: the
+		// cover pipeline resolves the display-sized copy for that box (see
+		// covers.ts), so the prefetch must name it.
+		const requests: CoverRequest[] = [];
 		for (let r = first; r <= last; r++) {
 			for (let c = 0; c < COLS; c++) {
 				const t = visible[r * COLS + c];
 				if (t === undefined) continue;
 				const url = shownDisc(t, discSelections).coverUrl;
-				if (url !== '') urls.push(url);
+				if (url !== '') requests.push({ url, width: COVER_W, height: COVER_H });
 			}
 		}
 		const focused = visible[focus];
 		if (focused !== undefined) {
 			const url = shownDisc(focused, discSelections).screenshotUrl;
-			if (url !== '') urls.push(url);
+			if (url !== '') requests.push({ url, width: 320, height: 180 });
 		}
-		prefetchCovers(urls);
+		prefetchCovers(requests);
 	}, [scrollTop, rows, visible, focus, discSelections]);
 
 	// Keep the focused tile inside the visible window.

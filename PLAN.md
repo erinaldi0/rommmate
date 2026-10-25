@@ -69,6 +69,10 @@ with a **react-tela** (React → canvas) UI.
 - `GET /api/roms?limit=…&offset=…` — the game list, walked page by page
   (100 per page) until the library is exhausted. The route exists in every
   RomM generation and doubles as the auth probe (`limit=1`).
+- `GET /api/platforms?limit=100` — the platform list (id, display name,
+  `url_logo`). One request, no paging; the dashboard's platforms row uses
+  the logo as its tile artwork (letterboxed). A server without the route
+  simply leaves the row on its cover stand-in.
 
 RomM versions drift in the details, and the client parses defensively:
 
@@ -480,6 +484,53 @@ Done in v0.11:
   with the merged rect landing *before* their image in the array),
   plus the disc badge / picker / detail screen. Fat NRO rebuilt and
   re-staged.
+
+Done in v0.12:
+
+- **Container-resolution artwork** (`src/covers.ts`): the on-device cache
+  was one file per URL, capped at 640 px on the long edge — the size for
+  the *grid*. The dashboard draws the same bytes at 108×144, so every
+  drawn cover kept a ~1.1 MiB RGBA copy of a 427×640 bitmap that
+  `drawImage` resampled down to a tenth of its size, every frame. The
+  cache is now two levels: the 640-px master stays the on-disk source of
+  truth (existing SD files keep working — no re-download), and on top of
+  it one file per (size, fit) the app actually draws is derived from it
+  (`<hash>-<w>x<h>.png`, `-c` for contain). A dashboard cover now decodes
+  to exactly 108×144 (~60 KiB RGBA, ~20× less) and paints 1:1; the grid
+  and detail derive their own sizes from the same master. Any step of the
+  derivation failing falls back to the master — a big cover still beats a
+  missing one. `resolveCover`/`prefetchCovers` take the box they are
+  drawing into, and the artwork identity (the dedupe key) is
+  url+size+fit.
+- **`contain` fit**: react-tela's `<Image>` stretches its source to the
+  whole box and cannot letterbox, so a fit whose aspect differs is baked
+  into the bytes by the same pipeline (image centred on a transparent
+  box). The browser preview runs it for the one case it matters in
+  (platform logos); the cover fit skips the re-encode there (the browser
+  resamples natively, exactly as the `<Image>` would).
+- **Platform icons** (RomM-web look): the platforms row previously used a
+  random member cover, which read as unrelated games. It now joins the
+  platform ids with `GET /api/platforms` and draws the platform's own
+  logo (`icon_url`, else the IGDB `url_logo`), letterboxed; a platform
+  the server reports no logo for falls back to a member cover. The
+  artwork token is scoped to the instance base URL — it is never sent to
+  external hosts (IGDB), which also keeps the preview's CORS preflight
+  from failing. On the Switch the logos need internet (they live at
+  images.igdb.com); without it those tiles keep their placeholder glyph
+  until a fetch succeeds.
+- **Favourites disc badge** (`src/romm.ts`): a favourites walk fetches
+  only the favoured roms, so a multi-disc release arrived with one real
+  disc plus sibling *stubs*, and the tile badge (built from
+  `discs.length`) never showed. Titles now carry `knownDiscs` (the full
+  release count, stubs included) and `discReleaseSlots` (each real disc's
+  1-based position within the release); the badge shows the disc's
+  release slot over the known total, so the same disc wears the same
+  number in every row — a 4-file Legend of Dragoon shows 4/4 in Continue
+  and in Favourites alike. The disc picker keeps listing real discs only.
+- **Real-box verification**: live preview against the user's instance —
+  platform logos letterboxed in the row (Nintendo, SNES, Wii, DOS, …),
+  1/4→4/4 badges consistent between Continue and Favourites, all covers
+  lit, no dark or reversed tiles.
 
 Still open:
 

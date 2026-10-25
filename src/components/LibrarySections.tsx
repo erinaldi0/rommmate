@@ -28,7 +28,8 @@ import { HintBar, HintBarBackdrop } from './HintBar';
 import { EmptyState } from './EmptyState';
 import { Spinner } from './Spinner';
 import { CoverImage, type CoverStatus } from './CoverImage';
-import type { LibrarySection, RommCollection, RommTitle } from '../romm';
+import type { Fit } from '../covers';
+import type { LibrarySection, RommCollection, RommPlatform, RommTitle } from '../romm';
 
 interface Props {
 	/** Status line from the client (load result, etc.). */
@@ -41,6 +42,8 @@ interface Props {
 	titles: RommTitle[];
 	/** Favourites, as a separate filtered walk reported them (grouped). */
 	favoriteTitles: RommTitle[];
+	/** The server's platforms (the artwork of the platforms row). */
+	platforms?: RommPlatform[];
 	/** The server's saved collections. */
 	collections: RommCollection[];
 	/** Per-title disc selection (title key → disc index). */
@@ -85,6 +88,8 @@ interface Tile {
 	name: string;
 	/** Second line (relative time, count, date…). */
 	sub: string;
+	/** How the artwork fits the cover box (platform logos letterbox). */
+	fit?: Fit;
 	/** The disc the tile shows, for multi-disc titles. */
 	discIndex?: number;
 	discCount?: number;
@@ -125,6 +130,7 @@ function CoverSlot({
 	y,
 	width,
 	height,
+	fit = 'cover',
 }: {
 	url: string;
 	glyph: string;
@@ -132,6 +138,7 @@ function CoverSlot({
 	y: number;
 	width: number;
 	height: number;
+	fit?: Fit;
 }) {
 	const [status, setStatus] = useState<CoverStatus>(url === '' ? 'ready' : 'loading');
 	// The plate is needed whenever the artwork is not on screen: the cover
@@ -139,7 +146,7 @@ function CoverSlot({
 	const placeholderVisible = url === '' || status !== 'ready';
 	return (
 		<>
-			<CoverImage url={url} x={x} y={y} width={width} height={height} onStatus={setStatus} />
+			<CoverImage url={url} x={x} y={y} width={width} height={height} fit={fit} onStatus={setStatus} />
 			<Rect
 				x={x}
 				y={y}
@@ -172,6 +179,7 @@ export function LibrarySections({
 	demo = false,
 	titles,
 	favoriteTitles,
+	platforms = [],
 	collections,
 	discSelections,
 	onOpenTitle,
@@ -217,34 +225,47 @@ export function LibrarySections({
 			});
 		}
 
-		// Platforms: one cover per platform, the biggest libraries first.
-		const byPlatform = new Map<string, { count: number; cover: string }>();
+		// Platforms: the platform's own logo per row (the same artwork the
+		// RomM web UI shows), the biggest libraries first. A platform the
+		// server reports no logo for falls back to one of its covers.
+		const platformById = new Map<number, RommPlatform>();
+		for (const p of platforms) {
+			if (p.id > 0) platformById.set(p.id, p);
+		}
+		const byPlatform = new Map<string, { count: number; cover: string; platformId: number }>();
 		for (const t of titles) {
 			if (t.platform === '') continue;
 			const entry = byPlatform.get(t.platform);
 			if (entry === undefined) {
-				byPlatform.set(t.platform, { count: 1, cover: t.coverUrl });
+				byPlatform.set(t.platform, { count: 1, cover: t.coverUrl, platformId: t.platformId });
 			} else {
 				entry.count += 1;
 				if (entry.cover === '' && t.coverUrl !== '') entry.cover = t.coverUrl;
 			}
 		}
-		const platforms = [...byPlatform.entries()].sort(
+		const platformRows = [...byPlatform.entries()].sort(
 			(a, b) => (a[1].count !== b[1].count ? b[1].count - a[1].count : a[0] < b[0] ? -1 : 1),
 		);
-		if (platforms.length > 0) {
+		if (platformRows.length > 0) {
 			out.push({
 				id: 'platforms',
 				label: 'Platforms',
-				countLabel: `${platforms.length} ${platforms.length === 1 ? 'platform' : 'platforms'}`,
+				countLabel: `${platformRows.length} ${platformRows.length === 1 ? 'platform' : 'platforms'}`,
 				section: { kind: 'recent' }, // headers never open this one; covers do
-				tiles: platforms.slice(0, MAX_TILES).map(([name, info]) => ({
-					key: `platform-${name}`,
-					coverUrl: info.cover,
-					name,
-					sub: `${info.count} ${info.count === 1 ? 'game' : 'games'}`,
-					section: { kind: 'platform', platform: name },
-				})),
+				tiles: platformRows.slice(0, MAX_TILES).map(([name, info]) => {
+					const known = info.platformId > 0 ? platformById.get(info.platformId) : undefined;
+					const logo = known?.logoUrl ?? '';
+					return {
+						key: `platform-${name}`,
+						// The logo is letterboxed (its aspect is the IGDB
+						// one, not the cover box's); a cover stand-in fills.
+						coverUrl: logo !== '' ? logo : info.cover,
+						fit: logo !== '' ? ('contain' as const) : undefined,
+						name,
+						sub: `${info.count} ${info.count === 1 ? 'game' : 'games'}`,
+						section: { kind: 'platform', platform: name },
+					};
+				}),
 			});
 		}
 
@@ -583,14 +604,22 @@ function tileFromTitle(
 	sub: string,
 ): Tile {
 	const index = discSelections[t.key] ?? t.mainIndex;
-	const disc = t.discs[Math.min(index, t.discs.length - 1)] ?? t.discs[0];
+	const realIndex = Math.min(index, t.discs.length - 1);
+	const disc = t.discs[realIndex] ?? t.discs[0];
+	// The badge counts the whole release (`knownDiscs`), not just the discs
+	// this list happens to hold: a favourites walk fetches only the
+	// favoured roms, but their sibling stubs still count the release — so a
+	// 4-disc game badges in favourites exactly as it does in the grid. The
+	// number itself is the disc's position in the release (stubs included),
+	// so the same disc wears the same badge in every row.
+	const releaseSlot = t.discReleaseSlots[realIndex] ?? realIndex + 1;
 	return {
 		key: `title-${t.key}`,
 		coverUrl: disc?.coverUrl !== '' && disc?.coverUrl !== undefined ? disc.coverUrl : t.coverUrl,
 		name: t.name,
 		sub,
-		discIndex: t.discs.length > 1 ? Math.min(index, t.discs.length - 1) + 1 : undefined,
-		discCount: t.discs.length > 1 ? t.discs.length : undefined,
+		discIndex: t.knownDiscs > 1 ? releaseSlot : undefined,
+		discCount: t.knownDiscs > 1 ? t.knownDiscs : undefined,
 		section: { kind: 'recent' }, // the label opens the row; covers open the title
 		title: t,
 	};

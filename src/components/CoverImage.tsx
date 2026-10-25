@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Image } from 'react-tela';
-import { resolveCover } from '../covers';
+import { resolveCover, type Fit } from '../covers';
 
 /** Where the artwork of a cover is in its journey. */
 export type CoverStatus = 'loading' | 'ready' | 'failed';
@@ -12,6 +12,14 @@ interface Props {
 	y: number;
 	width: number;
 	height: number;
+	/**
+	 * How the artwork is fitted into the box. 'cover' stretches it to fill
+	 * (the artwork's own aspect is ~the box's); 'contain' letterboxes it on
+	 * a transparent background, for artwork whose aspect differs (the
+	 * `<Image>` itself can only stretch, so the letterboxing is baked into
+	 * the bytes the cover pipeline resolves).
+	 */
+	fit?: Fit;
 	/**
 	 * Called once the artwork is available locally. The tile uses it to
 	 * hide the placeholder glyph underneath.
@@ -33,7 +41,7 @@ interface Props {
  * known. Until then this renders nothing and the caller keeps its
  * placeholder visible.
  */
-export function CoverImage({ url, x, y, width, height, onLoaded, onStatus }: Props) {
+export function CoverImage({ url, x, y, width, height, fit = 'cover', onLoaded, onStatus }: Props) {
 	const [src, setSrc] = useState('');
 	const entityRef = React.useRef<React.ElementRef<typeof Image> | null>(null);
 
@@ -72,7 +80,10 @@ export function CoverImage({ url, x, y, width, height, onLoaded, onStatus }: Pro
 		let cancelled = false;
 		onStatus?.('loading');
 
-		resolveCover(url).then((resolved) => {
+		// The artwork is resolved for THIS box: the pipeline returns a
+		// display-sized copy (see covers.ts), so the `<Image>` below paints
+		// it 1:1 instead of resampling the source every frame.
+		resolveCover(url, width, height, fit).then((resolved) => {
 			if (cancelled) return;
 			if (resolved === '') {
 				onStatus?.('failed');
@@ -88,9 +99,10 @@ export function CoverImage({ url, x, y, width, height, onLoaded, onStatus }: Pro
 		};
 		// `onLoaded` and `onStatus` are intentionally not dependencies: they
 		// are notifications, not inputs, and re-running the effect on every
-		// callback change would restart the download.
+		// callback change would restart the download. `width`, `height` and
+		// `fit` are: a different box is a different artwork to fetch.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [url]);
+	}, [url, width, height, fit]);
 
 	if (src === '') return null;
 

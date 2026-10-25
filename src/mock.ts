@@ -537,6 +537,7 @@ export const MOCK_GAMES: RommGame[] = ENTRIES.map((entry, i) => {
 	return {
 		id,
 		name: entry.name,
+		platformId: 0,
 		platform: entry.platform,
 		coverUrl: '',
 		screenshotUrl: '',
@@ -578,6 +579,7 @@ if (ffvi !== undefined) {
 	const disc2: RommGame = {
 		id: disc2Id,
 		name: ffvi.name,
+		platformId: 0,
 		platform: ffvi.platform,
 		coverUrl: '',
 		screenshotUrl: '',

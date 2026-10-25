@@ -40,6 +40,8 @@ export interface RommSibling {
 export interface RommGame {
 	id: number;
 	name: string;
+	/** The server's id of the platform this rom belongs to; 0 when unknown. */
+	platformId: number;
 	/** e.g. "Nintendo 64" — empty when unknown. */
 	platform: string;
 	/** Absolute URL to cover art, or "" when none. */
@@ -83,13 +85,30 @@ export interface RommTitle {
 	key: number;
 	/** Display name of the release. */
 	name: string;
+	/** The server's id of the release's platform; 0 when unknown. */
+	platformId: number;
+	/** Platform name of the release, or of its represented disc. */
 	platform: string;
 	/** Cover of the main disc, else the first disc that has one. */
 	coverUrl: string;
 	/** Screenshot of the main disc, else the first disc that has one. */
 	screenshotUrl: string;
-	/** Every known disc, in the server's disc order. */
+	/** Every disc with a full entry, in the server's disc order. */
 	discs: RommGame[];
+	/**
+	 * How many discs the release is known to have, stubs included — every
+	 * sibling list seen sharpens it. It is ≥ `discs.length` (a favourites
+	 * walk fetches only the favoured roms, but their sibling stubs still
+	 * count the whole release), and it is what the multi-disc badge shows.
+	 */
+	knownDiscs: number;
+	/**
+	 * For each disc in `discs`: its 1-based position within the whole
+	 * release (stubs included). It equals the disc's own index plus one
+	 * for a full title, and keeps the badge naming the *same* disc in a
+	 * partial one (a favourites walk) as in the rows that hold it all.
+	 */
+	discReleaseSlots: number[];
 	/** Index (into `discs`) of the disc the title represents by default. */
 	mainIndex: number;
 	/** Latest play across the discs, "" when none. */
@@ -111,6 +130,21 @@ export interface RommCollection {
 	 * parameters on the roms endpoint.
 	 */
 	kind: 'user' | 'smart' | 'virtual';
+}
+
+/**
+ * A platform as the server knows it. The dashboard shows one tile per
+ * platform that has roms in the library, with the platform's own logo
+ * (the same artwork the RomM web UI shows on its platforms page).
+ */
+export interface RommPlatform {
+	id: number;
+	/** Display name (a user rename wins), or "" when unknown. */
+	name: string;
+	/** Absolute URL to the platform's logo, or "" when it has none. */
+	logoUrl: string;
+	/** How many roms the server has on this platform. */
+	romCount: number;
 }
 
 /**
@@ -517,7 +551,17 @@ export function groupTitles(games: RommGame[]): RommTitle[] {
 		discs.sort((a, z) => (a.sort === z.sort ? 0 : a.sort < z.sort ? -1 : 1));
 
 		const fullDiscs: RommGame[] = [];
-		for (const d of discs) if (d.game !== null) fullDiscs.push(d.game);
+		const discReleaseSlots: number[] = [];
+		{
+			let slot = 0;
+			for (const d of discs) {
+				slot += 1;
+				if (d.game !== null) {
+					fullDiscs.push(d.game);
+					discReleaseSlots.push(slot);
+				}
+			}
+		}
 		// Stubs only cannot happen for a bucket (buckets come from entries),
 		// but never emit an empty title if the shape ever does.
 		if (fullDiscs.length === 0) continue;
@@ -550,10 +594,13 @@ export function groupTitles(games: RommGame[]): RommTitle[] {
 		titles.push({
 			key: b.key,
 			name,
+			platformId: shown.game?.platformId ?? fullDiscs[0].platformId,
 			platform: shown.game?.platform ?? fullDiscs[0].platform,
 			coverUrl,
 			screenshotUrl,
 			discs: fullDiscs,
+			knownDiscs: discs.length,
+			discReleaseSlots,
 			mainIndex,
 			lastPlayedAt,
 			createdAt,
@@ -772,6 +819,76 @@ export class RommClient {
 	}
 
 	/**
+	 * Fetch the server's platforms (names and logo URLs) in one request.
+	 *
+	 * The dashboard uses the logo as the artwork of its platforms row —
+	 * a random game cover stood in for it before, which looked like the
+	 * row was full of unrelated games. The list is small (a dozen or so)
+	 * and needs no paging; an older server without the route just leaves
+	 * the row without logos (the cover stand-in returns).
+	 */
+	async getPlatforms(signal?: AbortSignal): Promise<{
+		platforms: RommPlatform[];
+		error: string | null;
+	}> {
+		let json: unknown;
+		try {
+			const res = await this.#request('/api/platforms?limit=100', {}, signal);
+			if (!res.ok) {
+				return {
+					platforms: [],
+					error:
+						res.status === 404
+							? 'this server has no platform list'
+							: `HTTP ${res.status} from /api/platforms`,
+				};
+			}
+			try {
+				json = await res.json();
+			} catch {
+				return { platforms: [], error: 'malformed JSON from /api/platforms' };
+			}
+		} catch (err) {
+			return { platforms: [], error: `cannot reach RomM (${String(err)})` };
+		}
+
+		// Same shape tolerance as the other list routes: a bare array, or
+		// a wrapper with the items under one of the usual keys.
+		let items: unknown[] = [];
+		if (Array.isArray(json)) {
+			items = json;
+		} else if (typeof json === 'object' && json !== null) {
+			const o = json as Record<string, unknown>;
+			for (const key of ['items', 'data', 'results']) {
+				if (Array.isArray(o[key])) {
+					items = o[key] as unknown[];
+					break;
+				}
+			}
+		}
+
+		const platforms: RommPlatform[] = [];
+		for (const entry of items) {
+			if (typeof entry !== 'object' || entry === null) continue;
+			const e = entry as Record<string, unknown>;
+			const id = typeof e['id'] === 'number' && e['id'] > 0 ? e['id'] : 0;
+			if (id === 0) continue;
+			// A user rename wins, mirroring `parsePlatform` on the roms.
+			const name =
+				firstString(e, ['custom_name']) || firstString(e, ['display_name']) || firstString(e, ['name']);
+			// Local (server-hosted) icon first, then the external IGDB logo.
+			const logo = firstString(e, ['icon_url']) || firstString(e, ['url_logo']);
+			platforms.push({
+				id,
+				name,
+				logoUrl: this.#absUrl(logo),
+				romCount: nonNegNumber(e['rom_count']) ?? 0,
+			});
+		}
+		return { platforms, error: null };
+	}
+
+	/**
 	 * GET one page of `/api/roms` and parse the JSON body.
 	 *
 	 * @returns the parsed JSON, or a human-readable error message.
@@ -857,6 +974,7 @@ export class RommClient {
 		return {
 			id,
 			name,
+			platformId: typeof e['platform_id'] === 'number' ? (e['platform_id'] as number) : 0,
 			platform: parsePlatform(e),
 			coverUrl: this.#absUrl(parseCover(e)),
 			screenshotUrl: this.#absUrl(parseScreenshot(e)),

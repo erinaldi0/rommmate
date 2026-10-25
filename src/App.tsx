@@ -9,6 +9,7 @@ import {
 	groupTitles,
 	type RommGame,
 	type RommCollection,
+	type RommPlatform,
 	type RommTitle,
 	type LibrarySection,
 } from './romm';
@@ -56,6 +57,8 @@ export function App() {
 	const [favGames, setFavGames] = useState<RommGame[]>([]);
 	/** The server's saved collections (a 5.x-only feature). */
 	const [collections, setCollections] = useState<RommCollection[]>([]);
+	/** The server's platforms — the artwork of the dashboard's platforms row. */
+	const [platforms, setPlatforms] = useState<RommPlatform[]>([]);
 	/** The roms of the collection currently open, streamed page by page. */
 	const [collectionGames, setCollectionGames] = useState<RommGame[]>([]);
 	/** True while a collection is still loading. */
@@ -96,8 +99,8 @@ export function App() {
 	// the URL — it is handed over here, and kept in sync with the saved
 	// credentials (the app also auto-connects with a stored config).
 	useEffect(() => {
-		configureCovers(cfg.token);
-	}, [cfg.token]);
+		configureCovers(cfg.token, cfg.baseUrl);
+	}, [cfg.token, cfg.baseUrl]);
 
 	const connect = useCallback(async (config: Config) => {
 		// Each connection attempt gets a generation number: a late result
@@ -275,6 +278,7 @@ export function App() {
 			setBusy(false);
 			setFavGames([]);
 			setCollections([]);
+			setPlatforms([]);
 			setStatus(controller.signal.aborted ? 'Connection cancelled' : `Connection failed: ${friendlyNetworkError(authErr)}`);
 			return;
 		}
@@ -311,6 +315,19 @@ export function App() {
 				return;
 			}
 			setCollections(cs);
+		});
+
+		// Platform logos for the dashboard's platforms row: one small
+		// request, never gating (a server without the route just leaves
+		// the row on its cover stand-in).
+		void client.getPlatforms(controller.signal).then(({ platforms: ps, error }) => {
+			if (gen !== runGen.current) return;
+			if (error !== null) {
+				log('error', `platforms: ${error}`);
+				setPlatforms([]);
+				return;
+			}
+			setPlatforms(ps);
 		});
 
 		setStatus('Loading library…');
@@ -392,7 +409,7 @@ export function App() {
 		saveConfig(next);
 		setCfg(next);
 		setDemo(false);
-		configureCovers(next.token);
+		configureCovers(next.token, next.baseUrl);
 		void connect(next);
 	}
 
@@ -647,6 +664,7 @@ export function App() {
 					demo={demo}
 					titles={titles}
 					favoriteTitles={favSource}
+					platforms={platforms}
 					collections={collections}
 					discSelections={discSel}
 					onOpenTitle={openTitle}
