@@ -159,6 +159,14 @@ export function Button({
 	const labelW = measure(ctx, label, g.labelSize);
 	const keycapVisible = keycap !== undefined && focused && enabled;
 	const detailVisible = detail !== undefined && detail !== '' && align === 'left';
+	// The room the detail has: the button's width minus its own padding,
+	// the label and the gap — and, when a keycap is reserved, the keycap's
+	// space, so a long detail never runs under it. All relative to the
+	// button: `x` is absolute screen space and must not leak into a width
+	// computation (that was the bug that ellipsised the detail on every
+	// fixed-width button down to a lone '…').
+	const keycapRoom = keycap !== undefined ? g.keycap + KEYCAP_GAP : 0;
+	const detailMax = Math.max(0, w - g.pad - labelW - DETAIL_GAP - keycapRoom - g.pad);
 
 	return (
 		<>
@@ -194,7 +202,7 @@ export function Button({
 					align="start"
 					baseline="middle"
 					color={look.detail}
-					maxWidth={w - (x + g.pad + labelW + DETAIL_GAP) - g.pad}
+					maxWidth={detailMax}
 					overflow="ellipsis"
 				>
 					{detail}

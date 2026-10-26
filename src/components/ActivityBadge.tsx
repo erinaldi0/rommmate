@@ -10,6 +10,15 @@ const Y = 88;
 const H = 26;
 const PAD = 10;
 
+interface Props {
+	/**
+	 * The pill's top. The default sits below the header; a screen whose
+	 * top-right is content (the detail page's installation card) passes a
+	 * higher strip so the toast never lands on its text.
+	 */
+	y?: number;
+}
+
 /** How often the badge's dots move on. */
 const SPINNER_TICK_MS = 300;
 /** Distance between the badge's dots. */
@@ -31,7 +40,7 @@ const DOTS_W = DOT_GAP * 2 + BIG_R * 2 + 8;
  * A small dot cluster marks an in-flight activity, and a library label
  * carries the walk's completion, e.g. "Library 37%".
  */
-export function ActivityBadge() {
+export function ActivityBadge({ y = Y }: Props) {
 	const dims = useDimensions();
 	const { ctx } = useParent();
 	const activities = useSyncExternalStore(subscribeActivity, getActivities);
@@ -57,7 +66,7 @@ export function ActivityBadge() {
 		<>
 			<Rect
 				x={x}
-				y={Y}
+				y={y}
 				width={pillW}
 				height={H}
 				fill={colors.surfaceRaised}
@@ -73,7 +82,7 @@ export function ActivityBadge() {
 						<Rect
 							key={i}
 							x={x + PAD + (i - 1) * DOT_GAP - r}
-							y={Y + H / 2 - r}
+							y={y + H / 2 - r}
 							width={r * 2}
 							height={r * 2}
 							fill={on ? colors.accent : colors.coverGlyph}
@@ -83,7 +92,7 @@ export function ActivityBadge() {
 				})}
 			<Text
 				x={x + PAD + dotsW}
-				y={Y + 5}
+				y={y + 5}
 				fontFamily={fontFamily}
 				fontSize={fontSize.tiny}
 				fill={colors.textSecondary}

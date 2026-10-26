@@ -27,11 +27,11 @@ export function formatBytes(bytes: number): string {
 
 /**
  * A status pill: its text and colours. The `tone` is the design-system
- * form — the home screen draws the pill with the shared `StatusChip`, so
- * its colour comes from the status ramp and can never drift from any
- * other chip in the app. The `fill` / `textFill` pair stays because the
- * detail screen still draws its own pills from it (Phase 3 will move it
- * over); the two must keep agreeing until then.
+ * form — both the home hero and the detail screen draw the pill with the
+ * shared `StatusChip`, so its colour comes from the status ramp and can
+ * never drift from any other chip in the app. The `fill` / `textFill`
+ * pair stays for any hand-drawn caller (the disc picker's rows) and must
+ * keep agreeing with the tone map.
  */
 export interface Chip {
 	text: string;

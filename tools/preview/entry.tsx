@@ -368,6 +368,23 @@ const ART_PLATFORMS: RommPlatform[] = (() => {
 })();
 
 /**
+ * The release position of every multi-disc game, keyed by game id — the
+ * same derivation `App.tsx` performs for the detail screen's disc row, so
+ * the preview's detail views exercise the real wiring.
+ */
+function discInfoOf(titles: RommTitle[]): Map<number, { index: number; count: number }> {
+	const m = new Map<number, { index: number; count: number }>();
+	for (const t of titles) {
+		if (t.knownDiscs <= 1) continue;
+		t.discs.forEach((g, i) => {
+			const slot = t.discReleaseSlots[i] ?? i + 1;
+			m.set(g.id, { index: slot - 1, count: t.knownDiscs });
+		});
+	}
+	return m;
+}
+
+/**
  * The library and the detail screen, wired the way `App.tsx` wires them —
  * the grid stays mounted underneath and the detail screen paints over it.
  */
@@ -385,17 +402,7 @@ function PreviewApp({
 	// The release position of every multi-disc game — the same derivation
 	// the real App uses for the detail screen's Disc row.
 	const titles = useMemo(() => groupTitles(ART_GAMES), []);
-	const discInfo = useMemo(() => {
-		const m = new Map<number, { index: number; count: number }>();
-		for (const t of titles) {
-			if (t.knownDiscs <= 1) continue;
-			t.discs.forEach((g, i) => {
-				const slot = t.discReleaseSlots[i] ?? i + 1;
-				m.set(g.id, { index: slot - 1, count: t.knownDiscs });
-			});
-		}
-		return m;
-	}, [titles]);
+	const discInfo = useMemo(() => discInfoOf(titles), [titles]);
 
 	function openDetail(game: RommGame, disc?: { index: number; count: number }) {
 		setDetailDisc(disc ?? discInfo.get(game.id) ?? null);
@@ -578,7 +585,25 @@ if (view === 'demo' || view === 'filter' || view === 'empty') {
 	renderApp(<PreviewApp initialZone={view === 'filter' ? 'filter' : 'grid'} initialQuery={query} />);
 } else if (view === 'detail') {
 	const game = ART_GAMES[num('game', 0)] ?? ART_GAMES[0];
-	renderApp(<GameDetail game={game} onBack={() => {}} />);
+	const info = discInfoOf(groupTitles(ART_GAMES)).get(game.id);
+	renderApp(
+		<GameDetail
+			game={game}
+			disc={info ?? undefined}
+			onBack={() => {
+				log.push('back');
+				flush();
+			}}
+			onOpenDownloads={() => {
+				log.push('downloads');
+				flush();
+			}}
+			onDiscs={() => {
+				log.push('discs');
+				flush();
+			}}
+		/>,
+	);
 } else if (view === 'spinner') {
 	renderApp(<SpinnerView />);
 } else if (view === 'sections') {

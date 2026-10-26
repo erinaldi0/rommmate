@@ -1,12 +1,16 @@
 # RomMmate UI Redesign — Audit & Implementation Plan
 
-> **Status (v16):** Phase 1 (design-system foundation: token layer +
+> **Status (v17):** Phase 1 (design-system foundation: token layer +
 > `components/ui` primitives) shipped in v15; **Phase 2 (the dashboard on
 > the system)** shipped in v16 — ambient background, hero/install-card
 > restyle, both cover rows through the one `CoverCard`, contextual
-> hints, build stamp in the footer (see the PLAN.md v16 changelog).
-> Phases 3–7 (detail, grid + chrome, utility screens, motion, hardening)
-> remain as described below.
+> hints, build stamp in the footer (see the PLAN.md v16 changelog);
+> **Phase 3's detail half** shipped in v17 — `GameDetail` rebuilt as the
+> three-column game page (see the PLAN.md v17 changelog), plus two
+> shared-system repairs (`Button`'s detail `maxWidth`, the detail
+> screen's `paused` handover to the disc picker). What remains of
+> Phases 3–7: the grid + chrome restyle, utility screens, motion,
+> hardening.
 
 > A premium, console-launcher redesign of the RomMmate UI.
 > Produced from a full audit of the codebase, the installed react-tela types,

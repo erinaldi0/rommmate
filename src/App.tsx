@@ -822,6 +822,8 @@ export function App() {
 			{route === 'detail' && detail !== null && (
 				// The key makes the screen remount per game, so its state
 				// (which artwork is loading) never leaks into the next one.
+				// `paused` hands the controller to the disc picker while it
+				// floats over this screen.
 				<GameDetail
 					key={detail.id}
 					game={detail}
@@ -832,6 +834,7 @@ export function App() {
 						const t = titles.find((x) => x.key === detail.gameKey);
 						if (t !== undefined) setPicker(t);
 					}}
+					paused={picker !== null}
 				/>
 			)}
 			{picker !== null && (
@@ -843,7 +846,10 @@ export function App() {
 					onClose={() => setPicker(null)}
 				/>
 			)}
-			<ActivityBadge />
+			{/* The badge sits at the top edge over the detail page (its
+				right column starts high); everywhere else it drops below
+				the header, next to the count. */}
+			<ActivityBadge y={route === 'detail' ? 24 : undefined} />
 		</>
 	);
 }

@@ -430,6 +430,60 @@ The long-form notes lived here through v0.12; the git history keeps the detail.
 | **v14** | **The dashboard must not crash and the settings must not vanish: one streamed `/api/roms` request, an NDJSON library cache, background covers, visible-covers-only fetching, an SD-card config store, and stable disc numbering — and no whole-library view anywhere** (below) |
 | v15 | Dashboard redesigned to the new mockup: hero with inline install/play + sync saves + install panel + disc pager, platforms as a chip strip, X section menu, and the screen split into `dashboard/` subcomponents (below) |
 | **v16** | **The home screen restyled onto the shared design system**: ambient background, system-built hero + install card, both cover rows through the one `CoverCard`, contextual hint bar, build stamp in the footer — and the row headers' focus un-stranded (below) |
+| **v17** | **The game detail screen rebuilt on the design system**: a three-column game page (box art + screenshot / identity + description + actions / installation card + facts + disc + save-sync), the action focus walk repaired (the secondaries were unreachable), and two shared bugs fixed on the way — the `Button` detail's negative `maxWidth` and the disc picker double-owning the controller over this screen (below) |
+
+## v17 — The game detail screen on the design system
+
+The last screen that still drew itself by hand. Same rule as v16: a
+presentation pass on top of the floor — the gamepad loop, the input hooks,
+routing, the data layer, the cover pipeline and the Play service are
+untouched; every status line is still the resolution of a Play-service
+action and every percent is the download queue's own accounting.
+
+The page is three columns now, loudest first:
+
+- **Left — the artwork.** The 3:4 box art on the hero's softly-shadowed
+  plate (the page's one real shadow), with the server's 16:9 screenshot
+  under it when there is one (`screenshotUrl` existed in the model all
+  along; nothing fetched it). Both keep the transparent-plate invariant
+  and a live spinner while their bytes arrive.
+- **Center — identity and action.** The name in the display role (two
+  lines, wrapped + ellipsised), the identity line (platform · genres ·
+  year · disc count), the shared `StatusChip` (the same `hero.ts`
+  vocabulary the home hero wears), the description (three deliberate
+  lines, Y expands within the space that is left), and the actions:
+  one full-column primary button, quieter secondaries (sync saves /
+  discs / uninstall) with their real variants (`danger` for uninstall).
+- **Right — the facts of the machine.** One `Panel` with the install
+  card (phase, live progress, the last *confirmed* outcome, a live
+  queue error in the danger ramp with the primary as the recovery),
+  the home screen's four `Field` facts, the disc position for
+  multi-disc releases, and a save-sync row: what actually exists on
+  the SD (the real save/state inventory for this rom), then the
+  confirmed outcome of a sync, in place.
+
+Chrome and input:
+
+- The old app `Header` is gone — the page's title *is* the game. A quiet
+  "B · Library" pill replaces it top-left (tap-wired via `useCanvasTap`),
+  the page sits in the same `AmbientBackdrop` as home, and the activity
+  badge moves to the top edge while this screen is up (`y` prop) so the
+  toast never lands on the install card.
+- The action focus walk was **broken**: the buttons counter omitted the
+  primary (`Math.max(1, secondary.length)`), so no secondary was ever
+  reachable — uninstall existed but could not be pressed. Now 0 is the
+  primary and 1.. are the secondaries; the hint bar describes the focused
+  action (home's contextual rule), including "A select" for a disabled
+  target.
+- `paused` now exists: the disc picker floating over this screen used to
+  share the controller with it (B closed both, A picked a disc *and* ran
+  the focused action). The screen hands the controller over, the way the
+  grid always has.
+- Two shared bugs fixed on the way: the design-system `Button` computed
+  its detail's `maxWidth` from absolute screen space, so every detail on
+  a fixed-width button — the hero's included — ellipsised down to a lone
+  "…" (and could run under the keycap); and `ActivityBadge` learned a
+  `y`.
 
 ## v16 — The home screen on the design system
 
