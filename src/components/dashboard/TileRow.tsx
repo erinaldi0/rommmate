@@ -1,16 +1,18 @@
 /**
- * One horizontal row of cover tiles: the header (label + count), the
- * covers, the multi-disc badges and the two text lines under each cover.
+ * One horizontal row of cover cards: the Continue playing / Favourites /
+ * Recently added / Collections rows, each drawn through the design
+ * system's one `CoverCard` — the same card everywhere, so a cover's
+ * artwork, placeholder, title, second line, disc badge and focus ring can
+ * never drift between the rows that show it.
  *
  * Presentational: the screener culls rows to the viewport, hands one row
- * in with its current focus index, and draws the focus ring itself (the
- * ring must paint above the row-masking bands, which the tiles must not).
+ * in with its current focus index, and the focused card draws its own
+ * ring (the focused row is always fully scrolled into view, so an inline
+ * ring never meets the masking bands).
  */
 import React from 'react';
-import { Rect, Text } from 'react-tela';
-import { colors, fontFamily, radius } from '../../theme';
-import { COVER_H, COVER_W, PITCH_X, TILE_X0 } from './layout';
-import { CoverSlot } from './cover-slot';
+import { CoverCard } from '../ui';
+import { COVER_H, COVER_W, PITCH_X, TILE_X0, fsTileSub, fsTileTitle } from './layout';
 import type { DisplayRow } from './section-rows';
 
 interface Props {
@@ -29,74 +31,35 @@ interface Props {
 }
 
 export function TileRow({ row, y, focused, focusSel, maxCol }: Props) {
-	const coverTop = y + 26;
-	const nameW = PITCH_X - 6;
-
 	return (
 		<>
 			{/* The header text is drawn by the screener (it also sizes the
 				focus ring around it); here only the covers and their text. */}
 			{row.tiles.map((t, ti) => {
 				const x = TILE_X0 + ti * PITCH_X;
-				const covered = t.coverUrl !== '' ? '' : (t.name.trim().charAt(0).toUpperCase() || '?');
 				const enabled = ti <= maxCol || (focused && ti === focusSel);
+				const badge =
+					t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined
+						? `${t.discIndex}/${t.discCount}`
+						: undefined;
 				return (
-					<React.Fragment key={t.key}>
-						<CoverSlot
-							url={t.coverUrl}
-							glyph={covered}
-							x={x}
-							y={coverTop}
-							width={COVER_W}
-							height={COVER_H}
-							enabled={enabled}
-						/>
-
-						{/* Multi-disc badge over the corner of the cover. */}
-						{t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined && (
-							<Rect x={x + 6} y={coverTop + 6} width={30} height={18} fill={colors.accent} borderRadius={radius.sm} />
-						)}
-						{t.discCount !== undefined && t.discCount > 1 && t.discIndex !== undefined && (
-							<Text
-								x={x + 6 + 15}
-								y={coverTop + 15}
-								fontFamily={fontFamily}
-								fontSize={10}
-								fill={colors.textPrimary}
-								textAlign="center"
-								textBaseline="middle"
-							>
-								{`${t.discIndex}/${t.discCount}`}
-							</Text>
-						)}
-
-						<Text
-							x={x}
-							y={coverTop + COVER_H + 15}
-							fontFamily={fontFamily}
-							fontSize={13}
-							textBaseline="alphabetic"
-							fill={focused && ti === focusSel ? colors.textPrimary : colors.textSecondary}
-							maxWidth={nameW}
-							overflow="ellipsis"
-						>
-							{t.name}
-						</Text>
-						{t.sub !== '' && (
-							<Text
-								x={x}
-								y={coverTop + COVER_H + 32}
-								fontFamily={fontFamily}
-								fontSize={10}
-								textBaseline="alphabetic"
-								fill={colors.textFaint}
-								maxWidth={nameW}
-								overflow="ellipsis"
-							>
-								{t.sub}
-							</Text>
-						)}
-					</React.Fragment>
+					<CoverCard
+						key={t.key}
+						x={x}
+						y={y + 26}
+						width={COVER_W}
+						height={COVER_H}
+						coverUrl={t.coverUrl}
+						name={t.name}
+						platform={t.sub}
+						fit={t.fit}
+						focused={focused && ti === focusSel}
+						enabled={enabled}
+						badge={badge}
+						titleSize={fsTileTitle}
+						titleLines={1}
+						platformSize={fsTileSub}
+					/>
 				);
 			})}
 		</>

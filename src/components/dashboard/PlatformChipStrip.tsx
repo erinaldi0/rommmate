@@ -1,24 +1,30 @@
 /**
  * The platform chip strip: one pill per platform, the platform's own logo
- * on its left, the biggest libraries first.
+ * on its left, the biggest libraries first, and the library's rom count
+ * beside the name — compact, visually distinct filters for the library.
  *
  * The strip scrolls itself: horizontally, to keep the focused chip inside
  * the visible window (the same rule the grid's FilterBar applies), and it
  * culls the chips that fall outside (a chip's logo is a cover job, and
- * the on-device rule is fetch only what is displayed). The chip's focus
- * stroke is the ring — no separate outline is drawn above the bands.
+ * the on-device rule is fetch only what is displayed). The focused chip is
+ * the *selected* platform: a raised fill, the accent stroke and the count
+ * turning accent make it unmistakable. The focus stroke is the ring — no
+ * separate outline is drawn above the bands.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Rect, Text, useDimensions, useParent } from 'react-tela';
-import { colors, fontFamily, radius } from '../../theme';
+import { Rect, useDimensions, useParent } from 'react-tela';
+import { colors, radius } from '../../theme';
 import { measure, truncate } from '../../text';
 import { CoverImage } from '../CoverImage';
+import { Text } from '../ui';
 import { CHIP_GAP, MARGIN_X, TILE_X0 } from './layout';
 import type { PlatformChip } from './section-rows';
 
-const CHIP_H = 40;
+const CHIP_H = 44;
 const ICON = 24;
 const MAX_LABEL_W = 200;
+const LABEL_FS = 14;
+const COUNT_FS = 12;
 
 interface Props {
 	chips: PlatformChip[];
@@ -39,9 +45,10 @@ export function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
 	// The strip's layout, measured per render pass.
 	const widths = useMemo(() => {
 		return chips.map((c) => {
-			const textW = measure(ctx, truncate(ctx, c.name, MAX_LABEL_W, 13), 13);
+			const textW = measure(ctx, truncate(ctx, c.name, MAX_LABEL_W, LABEL_FS), LABEL_FS);
+			const countW = measure(ctx, `${c.count}`, COUNT_FS);
 			const iconW = c.logoUrl === '' ? 0 : ICON + 8;
-			return 12 + iconW + textW + 14;
+			return 12 + iconW + textW + 10 + countW + 14;
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [chips]);
@@ -86,7 +93,11 @@ export function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
 				if (x + width < MARGIN_X - 4 || x > dims.width - MARGIN_X + 4) return null;
 
 				const isFocused = focused && i === focusSel;
-				const label = truncate(ctx, c.name, MAX_LABEL_W, 13);
+				const label = truncate(ctx, c.name, MAX_LABEL_W, LABEL_FS);
+				const iconW = c.logoUrl === '' ? 0 : ICON + 8;
+				const labelX = x + 12 + iconW;
+				const labelW = measure(ctx, label, LABEL_FS);
+				const countX = labelX + labelW + 10;
 
 				return (
 					<React.Fragment key={c.key}>
@@ -99,6 +110,7 @@ export function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
 							stroke={isFocused ? colors.accent : colors.border}
 							lineWidth={isFocused ? 2 : 1}
 							borderRadius={radius.pill}
+							pointerEvents={false}
 						/>
 						{c.logoUrl !== '' && (
 							<CoverImage
@@ -113,16 +125,26 @@ export function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
 							/>
 						)}
 						<Text
-							x={x + 12 + (c.logoUrl !== '' ? ICON + 8 : 0)}
+							x={labelX}
 							y={y + CHIP_H / 2}
-							fontFamily={fontFamily}
-							fontSize={13}
-							textBaseline="middle"
-							fill={isFocused ? colors.textPrimary : colors.textSecondary}
-							maxWidth={width - (c.logoUrl !== '' ? ICON + 32 : 24)}
+							variant="label"
+							size={LABEL_FS}
+							baseline="middle"
+							maxWidth={MAX_LABEL_W}
 							overflow="ellipsis"
+							color={isFocused ? colors.textPrimary : colors.textSecondary}
 						>
 							{label}
+						</Text>
+						<Text
+							x={countX}
+							y={y + CHIP_H / 2}
+							variant="micro"
+							size={COUNT_FS}
+							baseline="middle"
+							color={isFocused ? colors.accent : colors.textMuted}
+						>
+							{`${c.count}`}
 						</Text>
 					</React.Fragment>
 				);

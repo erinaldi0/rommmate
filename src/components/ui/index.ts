@@ -26,8 +26,8 @@ export {
 export type { TypeRole, ElevationName, ElevationStyle } from '../../theme';
 
 // ── Primitives ──────────────────────────────────────────────────────────────
-export { Surface, Panel, Scrim, Backdrop } from './Surface';
-export type { SurfaceProps, PanelProps, ScrimProps, ScrimDirection } from './Surface';
+export { Surface, Panel, Scrim, Backdrop, AmbientBackdrop } from './Surface';
+export type { SurfaceProps, PanelProps, ScrimProps, ScrimDirection, AmbientBackdropProps } from './Surface';
 
 export { Text, SectionHeading, Field } from './Text';
 export type { TextProps, SectionHeadingProps, FieldProps } from './Text';

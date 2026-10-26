@@ -56,6 +56,15 @@ export interface CoverCardProps {
 	showRing?: boolean;
 	/** How far the ring sits outside the cover. */
 	ringPad?: number;
+	/**
+	 * The title's font size. Defaults to the `label` role's size; a compact
+	 * row card passes a smaller one so its single line reads in proportion.
+	 */
+	titleSize?: number;
+	/** How many lines the title may wrap to (1 = one line, ellipsised). */
+	titleLines?: number;
+	/** The second line's font size (defaults to `tiny`). */
+	platformSize?: number;
 }
 
 /** The height of the text block under the cover (two title lines + platform). */
@@ -82,11 +91,16 @@ export function CoverCard({
 	badge,
 	showRing,
 	ringPad = 6,
+	titleSize,
+	titleLines = 2,
+	platformSize,
 }: CoverCardProps) {
 	const { ctx } = useParent();
 
 	const title = name !== '' ? name : 'Untitled';
-	const titleLines = wrapLines(ctx, title, width - 4, 2, fontSize.label);
+	const titleLinesMax = Math.max(1, titleLines);
+	const titleFontSize = titleSize ?? fontSize.label;
+	const titleLinesWrapped = wrapLines(ctx, title, width - 4, titleLinesMax, titleFontSize);
 
 	// The artwork's lifecycle: keep the plate + glyph while the bytes are not
 	// ready. A card reused for a different cover resets with its url.
@@ -135,12 +149,13 @@ export function CoverCard({
 
 			{badge !== undefined && badge !== '' && <Badge x={x + 8} y={y + 8} text={badge} />}
 
-			{titleLines.map((line, i) => (
+			{titleLinesWrapped.map((line, i) => (
 				<Text
 					key={`title-${i}`}
 					x={x + 2}
 					y={textTop + i * TITLE_LINE_H}
 					variant="label"
+					size={titleFontSize}
 					color={focused ? colors.textPrimary : colors.textSecondary}
 				>
 					{line}
@@ -150,10 +165,10 @@ export function CoverCard({
 			{platform !== undefined && platform !== '' && (
 				<Text
 					x={x + 2}
-					y={textTop + titleLines.length * TITLE_LINE_H}
+					y={textTop + titleLinesWrapped.length * TITLE_LINE_H}
 					variant="caption"
-					size={fontSize.tiny}
-					color={colors.textFaint}
+					size={platformSize ?? fontSize.tiny}
+					color={colors.textMuted}
 					maxWidth={width - 4}
 					overflow="ellipsis"
 				>
@@ -161,7 +176,9 @@ export function CoverCard({
 				</Text>
 			)}
 
-			{ringOn && <FocusRing x={x} y={y} width={width} height={height} radius={radius.md} pad={ringPad} />}
+			{ringOn && (
+				<FocusRing x={x} y={y} width={width} height={height} radius={radius.md} pad={ringPad} glow />
+			)}
 		</>
 	);
 }

@@ -9,8 +9,8 @@
  * are the caller's job; these atoms only paint.
  */
 import React from 'react';
-import { Rect, useLinearGradient } from 'react-tela';
-import { colors, elevation, radius, type ElevationName } from '../../theme';
+import { Rect, useLinearGradient, useRadialGradient } from 'react-tela';
+import { colors, elevation, radius, screen, type ElevationName } from '../../theme';
 
 /** Default corner radius for a surface (a raised panel). */
 const PANEL_RADIUS = radius.xl;
@@ -190,4 +190,36 @@ export function Scrim({
 /** The app background as a single full-bleed panel (a `flat` surface). */
 export function Backdrop({ width, height, color = colors.bg }: { width: number; height: number; color?: string }) {
 	return <Rect x={0} y={0} width={width} height={height} fill={color} pointerEvents={false} />;
+}
+
+export interface AmbientBackdropProps {
+	/** Left edge of the slice; defaults to the screen's left. */
+	x?: number;
+	/** Top edge of the slice; defaults to the screen's top. */
+	y?: number;
+	width: number;
+	height: number;
+}
+
+/**
+ * The app's atmosphere: one radial gradient — a soft indigo pool of light
+ * around the upper-left, fading into the flat background — as a single
+ * `Rect`. This is the depth layer the flat `Backdrop` cannot give, and it
+ * costs one gradient fill.
+ *
+ * The gradient is defined in *screen* coordinates, not the rect's: a slice
+ * of the backdrop re-drawn over one of the overflow-masking bands shows
+ * exactly the pixels the full backdrop shows there, so a screen can mask
+ * its scrolled content with `AmbientBackdrop` slices instead of flat `bg`
+ * rects and keep its atmosphere seamless (canvas gradients are
+ * canvas-space by definition — the "clipping" is free).
+ */
+export function AmbientBackdrop({ x = 0, y = 0, width, height }: AmbientBackdropProps) {
+	const cx = Math.round(screen.width * 0.3);
+	const glow = useRadialGradient(cx, 200, 40, cx, 200, 760, [
+		[0, colors.ambient],
+		[0.55, colors.bg],
+		[1, colors.bg],
+	]);
+	return <Rect x={x} y={y} width={width} height={height} fill={glow} pointerEvents={false} />;
 }

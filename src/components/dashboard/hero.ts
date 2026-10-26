@@ -13,6 +13,7 @@ import { colors } from '../../theme';
 import { play } from '../../play';
 import type { PlayState } from '../../play';
 import type { Fit } from '../../covers';
+import type { ChipTone } from '../ui/Chip';
 import type { RommGame, RommTitle } from '../../romm';
 
 /** Human readable file size (empty for an unknown size). */
@@ -24,28 +25,37 @@ export function formatBytes(bytes: number): string {
 	return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-/** A status pill: its text and colours. */
+/**
+ * A status pill: its text and colours. The `tone` is the design-system
+ * form — the home screen draws the pill with the shared `StatusChip`, so
+ * its colour comes from the status ramp and can never drift from any
+ * other chip in the app. The `fill` / `textFill` pair stays because the
+ * detail screen still draws its own pills from it (Phase 3 will move it
+ * over); the two must keep agreeing until then.
+ */
 export interface Chip {
 	text: string;
 	fill: string;
 	textFill: string;
+	/** The status-ramp tone the design-system chip draws this state as. */
+	tone?: ChipTone;
 }
 
 /** The install-state pill for one PlayState. */
 export function stateChip(state: PlayState): Chip {
 	switch (state.kind) {
 		case 'demo':
-			return { text: 'Demo', fill: colors.surfaceRaised, textFill: colors.textMuted };
+			return { text: 'Demo', fill: colors.surfaceRaised, textFill: colors.textMuted, tone: 'neutral' };
 		case 'unsupported':
-			return { text: 'No core', fill: colors.surfaceRaised, textFill: colors.warning };
+			return { text: 'No core', fill: colors.surfaceRaised, textFill: colors.warning, tone: 'warning' };
 		case 'not-installed':
-			return { text: 'Not installed', fill: colors.surfaceRaised, textFill: colors.textMuted };
+			return { text: 'Not installed', fill: colors.surfaceRaised, textFill: colors.textMuted, tone: 'surface' };
 		case 'installing':
-			return { text: 'Installing…', fill: colors.accentMuted, textFill: colors.accent };
+			return { text: 'Installing…', fill: colors.accentMuted, textFill: colors.accent, tone: 'accent' };
 		case 'ready':
-			return { text: 'Installed', fill: colors.surfaceRaised, textFill: colors.success };
+			return { text: 'Installed', fill: colors.surfaceRaised, textFill: colors.success, tone: 'success' };
 		case 'stale':
-			return { text: 'Outdated', fill: colors.surfaceRaised, textFill: colors.warning };
+			return { text: 'Outdated', fill: colors.surfaceRaised, textFill: colors.warning, tone: 'warning' };
 	}
 }
 

@@ -52,6 +52,16 @@ export const colors = {
 	coverGlyphText: '#4a4a6e',
 	/** Base of the translucent gradient scrims (the blur substitute). */
 	scrim: '#0a0a12',
+
+	/**
+	 * The core of the ambient background: the soft indigo pool of light the
+	 * home screen sits in (see `AmbientBackdrop`). A lift of `bg` toward
+	 * `accentMuted` — deliberately quiet, so cover art stays the loudest
+	 * thing on screen.
+	 */
+	ambient: '#1d1d36',
+	/** The accent as a translucent glow — the focused target's halo. */
+	accentGlow: 'rgba(120,149,255,0.45)',
 } as const;
 
 /** Spacing scale — every gap in the UI is one of these. */

@@ -429,6 +429,64 @@ The long-form notes lived here through v0.12; the git history keeps the detail.
 | v13 | Play: rom downloads, RetroArch + BIOS + cores from RomM, in-game launch, save + state sync |
 | **v14** | **The dashboard must not crash and the settings must not vanish: one streamed `/api/roms` request, an NDJSON library cache, background covers, visible-covers-only fetching, an SD-card config store, and stable disc numbering — and no whole-library view anywhere** (below) |
 | v15 | Dashboard redesigned to the new mockup: hero with inline install/play + sync saves + install panel + disc pager, platforms as a chip strip, X section menu, and the screen split into `dashboard/` subcomponents (below) |
+| **v16** | **The home screen restyled onto the shared design system**: ambient background, system-built hero + install card, both cover rows through the one `CoverCard`, contextual hint bar, build stamp in the footer — and the row headers' focus un-stranded (below) |
+
+## v16 — The home screen on the design system
+
+The v15 dashboard was functionally right but drew everything by hand.
+The design-system foundation (theme tokens + `components/ui` atoms) landed
+at the end of v15; this pass points the home screen at it — a
+presentation change on the floor that does not touch (the plan's rule):
+the gamepad loop, the input hooks, routing, the data layer, the cover
+pipeline or the Play service.
+
+What changed visually:
+
+- **Ambient background** — one radial gradient (`AmbientBackdrop`, the
+  indigo light pool behind the hero) instead of a flat fill. The
+  overflow-masking bands draw *slices of the same gradient* (canvas
+  gradients are canvas-space), so scrolled rows fade into the atmosphere
+  instead of hitting a flat edge.
+- **Hero** — the box art sits on a softly-shadowed plate (the one real
+  `shadowBlur` on the screen), with a spinner while its artwork loads;
+  identity, status chips and summary draw from the type roles; the state
+  pill is the shared `StatusChip` (the `stateChip` vocabulary in
+  `hero.ts` grew a `tone` the two screens share); the action row is the
+  shared `Button` (lg, A-keycap, the primary's reason as trailing
+  detail). A focused-but-disabled button still shows focus — `resolveLook`
+  kept focus invisible on inert buttons, worse than the hand-drawn
+  version it replaced.
+- **Install card** — the shared `Panel` + `ProgressBar` + `Field` grid;
+  the disc pager unchanged.
+- **Rows** — Continue playing and Favourites (and recent/collections)
+  all draw through the one design-system `CoverCard` (which grew
+  `titleSize`/`titleLines`/`platformSize` so a compact row card and a
+  big feature slot are the same component). Covers grew 88×117 → 96×128;
+  the focused card's ring carries the accent glow (one halo on screen at
+  a time). `cover-slot.tsx` is gone — absorbed into `CoverCard`.
+- **Platform chips** — taller pills wearing the platform logo, the rom
+  count, and an unmistakable focused state (raised fill, accent stroke,
+  accent count); self-scroll and culling unchanged.
+- **Chrome** — the header keeps the brand + tagline + count but loses
+  the build stamp, which moved to the footer's bottom-left corner next
+  to the hint bar; the hints are the design-system `HintBar` and are
+  *contextual* now (the hero's A says the primary's own verb — "A play
+  game", "A install game" — and `+` says where it goes); the empty /
+  loading / connection-failed states are the design-system
+  `EmptyState` / `LoadingState` / `ErrorState`.
+
+One latent bug surfaced and was fixed: the row-header focus was
+unreachable — `focusSel`'s clamp lower-bounded `sel` at
+`Math.max(focusMin, 0)` = 0, so every path that sets `sel = -1` (Down
+from the hero, Left from the first cover, a SectionMenu jump — all
+deliberate, all commented as such) clamped straight back to the first
+cover. The ring, the label highlight and "A opens the section" existed
+but could never fire. The clamp's lower bound is `focusMin` now.
+
+Verified in the preview harness (`?view=sections`, with new `empty`/
+`busy`/`fail` knobs for the states): bounds, entity counts, image
+mounts, culling, focus rings, hero preview, chips strip, section menu,
+A-actions — plus `tsc`, the esbuild bundle and the grouping unit test.
 
 ## v15 — The dashboard, redesigned and split
 

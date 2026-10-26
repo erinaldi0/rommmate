@@ -173,7 +173,7 @@ function ColActions({ col }: { col: Col }) {
 			{rows.map((row, r) =>
 				row.map((b, i) => (
 					<Button
-						key={`${b.variant}-${b.label}`}
+					key={`${r}-${i}-${b.variant}-${b.label}`}
 						x={left + i * half}
 						y={rowY(r)}
 						label={b.label}

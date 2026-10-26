@@ -32,6 +32,13 @@ export interface FocusRingProps {
 	/** Draw nothing when `false` (a target that does not own the focus). */
 	active?: boolean;
 	lineWidth?: number;
+	/**
+	 * A soft accent halo under the stroke — the focused target's glow.
+	 * `shadowBlur` is the one real-but-costly effect on the 32-bit heap, so
+	 * it is opt-in: the screens gate it to the single focused target (one
+	 * glowing ring on screen at a time), never to whole rows of them.
+	 */
+	glow?: boolean;
 }
 
 /** The accent focus ring around a target, sitting `pad` outside its bounds. */
@@ -45,6 +52,7 @@ export function FocusRing({
 	color = colors.accent,
 	active = true,
 	lineWidth = 4,
+	glow = false,
 }: FocusRingProps) {
 	if (!active) return null;
 	return (
@@ -56,6 +64,8 @@ export function FocusRing({
 			stroke={color}
 			lineWidth={lineWidth}
 			borderRadius={corner + pad}
+			shadowColor={glow ? colors.accentGlow : undefined}
+			shadowBlur={glow ? 14 : undefined}
 			pointerEvents={false}
 		/>
 	);

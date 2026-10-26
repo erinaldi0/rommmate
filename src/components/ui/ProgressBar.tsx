@@ -13,11 +13,12 @@ import { Rect } from 'react-tela';
 import { colors, fontSize } from '../../theme';
 import { Text } from './Text';
 
-export type ProgressTone = 'accent' | 'success' | 'danger' | 'neutral';
+export type ProgressTone = 'accent' | 'success' | 'warning' | 'danger' | 'neutral';
 
 const TONE: Record<ProgressTone, string> = {
 	accent: colors.accent,
 	success: colors.success,
+	warning: colors.warning,
 	danger: colors.danger,
 	neutral: colors.textMuted,
 };
@@ -52,7 +53,14 @@ export interface ProgressBarProps {
 export function ProgressBar({ x, y, width, value, height = 6, tone = 'accent', label, right, caption, captionColor }: ProgressBarProps) {
 	const v = Math.min(1, Math.max(0, value));
 	const fillW = Math.max(height / 2, width * v);
-	const labelColor = tone === 'success' ? colors.success : tone === 'danger' ? colors.danger : colors.textSecondary;
+	const labelColor =
+		tone === 'success'
+			? colors.success
+			: tone === 'warning'
+				? colors.warning
+				: tone === 'danger'
+					? colors.danger
+					: colors.textSecondary;
 
 	return (
 		<>

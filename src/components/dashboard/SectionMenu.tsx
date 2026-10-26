@@ -3,11 +3,13 @@
  * the dashboard — the hero first, then every row that exists.
  *
  * Presentational: the screener owns the focus index and the input; this
- * paints the dimmed backdrop, the panel and the item list.
+ * paints the dimmed backdrop, the panel (the one legitimately *floating*
+ * surface — a modal earns the shadow) and the item list.
  */
 import React from 'react';
-import { Rect, Text, useDimensions } from 'react-tela';
-import { colors, fontFamily, radius, fontSize } from '../../theme';
+import { Rect, useDimensions } from 'react-tela';
+import { colors, fontSize, radius } from '../../theme';
+import { Panel, Text } from '../ui';
 
 interface Item {
 	label: string;
@@ -32,25 +34,9 @@ export function SectionMenu({ items, focus }: Props) {
 
 	return (
 		<>
-			<Rect x={0} y={0} width={dims.width} height={dims.height} fill={colors.sunken} alpha={0.72} />
-			<Rect
-				x={panelX}
-				y={panelY}
-				width={PANEL_W}
-				height={panelH}
-				fill={colors.surface}
-				stroke={colors.borderStrong}
-				lineWidth={1}
-				borderRadius={radius.xl}
-			/>
-			<Text
-				x={panelX + 24}
-				y={panelY + 18}
-				fontFamily={fontFamily}
-				fontSize={fontSize.small}
-				textBaseline="alphabetic"
-				fill={colors.textFaint}
-			>
+			<Rect x={0} y={0} width={dims.width} height={dims.height} fill={colors.sunken} alpha={0.72} pointerEvents={false} />
+			<Panel x={panelX} y={panelY} width={PANEL_W} height={panelH} elevation="floating" />
+			<Text x={panelX + 24} y={panelY + 34} variant="micro" color={colors.textFaint}>
 				SECTIONS
 			</Text>
 			{items.map((item, i) => {
@@ -67,25 +53,25 @@ export function SectionMenu({ items, focus }: Props) {
 							stroke={focused ? colors.accent : undefined}
 							lineWidth={focused ? 2 : 1}
 							borderRadius={radius.md}
+							pointerEvents={false}
 						/>
 						<Text
 							x={panelX + 28}
 							y={y + (ROW_H - 6) / 2}
-							fontFamily={fontFamily}
-							fontSize={15}
-							textBaseline="middle"
-							fill={focused ? colors.textPrimary : colors.textSecondary}
+							variant="label"
+							size={fontSize.small}
+							baseline="middle"
+							color={focused ? colors.textPrimary : colors.textSecondary}
 						>
 							{item.label}
 						</Text>
 						<Text
 							x={panelX + PANEL_W - 28}
 							y={y + (ROW_H - 6) / 2}
-							fontFamily={fontFamily}
-							fontSize={12}
-							textBaseline="middle"
-							fill={focused ? colors.textSecondary : colors.textFaint}
-							textAlign="right"
+							variant="micro"
+							baseline="middle"
+							align="right"
+							color={focused ? colors.textSecondary : colors.textFaint}
 							maxWidth={220}
 							overflow="ellipsis"
 						>

@@ -40,9 +40,14 @@ interface Look {
 }
 
 function resolveLook(variant: ButtonVariant, focused: boolean, enabled: boolean): Look {
-	// Disabled is the same across variants: a quiet, dimmed, do-not-touch block.
+	// Disabled is the same across variants: a quiet, dimmed, do-not-touch
+	// block. Focus is still shown on it (a raised fill + the accent
+	// stroke, with the label staying dim) — the player has to see where
+	// the cursor is even when the action there is inert.
 	if (!enabled) {
-		return { fill: colors.surface, stroke: colors.border, label: colors.textFaint, detail: colors.textFaint };
+		return focused
+			? { fill: colors.surfaceRaised, stroke: colors.accent, label: colors.textFaint, detail: colors.textFaint }
+			: { fill: colors.surface, stroke: colors.border, label: colors.textFaint, detail: colors.textFaint };
 	}
 	switch (variant) {
 		case 'primary':
@@ -164,7 +169,7 @@ export function Button({
 				height={h}
 				fill={look.fill}
 				stroke={look.stroke ?? undefined}
-				lineWidth={focused && enabled ? 2 : 1}
+				lineWidth={focused ? 2 : 1}
 				borderRadius={corner ?? radius.md}
 				pointerEvents={onPress !== undefined}
 				onClick={onPress !== undefined ? () => onPress() : undefined}

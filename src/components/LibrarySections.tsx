@@ -7,44 +7,45 @@
  *   hero.ts            the featured game's model (pure data)
  *   HeroCard           its box art, identity, chips, summary and actions
  *   InstallPanel       the installation card: progress, facts, disc pager
- *   TileRow            one horizontal row of cover tiles
+ *   TileRow            one horizontal row of the shared CoverCards
  *   PlatformChipStrip  the platform chips (self-scrolling)
  *   SectionMenu        the X jump-menu overlay
- *   cover-slot.tsx     the cover frame every tile draws through
+ *   components/ui      the design system every piece above draws through
  *
  * What remains here is the part that must be in one mind: the focus
  * state machine (hero targets and row indices), the row scroll, the
  * gamepad input, and the paint order that masks the scrolled rows.
  *
- * Above the fold sits the hero — the featured game (most recently played,
- * else most recently added, else the first) — with inline actions: the
- * primary button installs or plays, "Sync saves" syncs the disc's saves,
- * "More" opens the detail screen. The hero is also the *preview*: a row
- * cover's focus moves the featured content to that game (identity, facts,
- * actions), and the featured game returns when the focus comes home.
- * Below it, the library continues as
- * horizontal rows: Continue playing, Favourites, Platforms (chips),
- * Recently added, Collections. X opens the section menu.
+ * The screen leads with the hero — the featured game (most recently
+ * played, else most recently added, else the first) — with inline
+ * actions: the primary button installs or plays, "Sync saves" syncs the
+ * disc's saves, "More" opens the detail screen. The hero is also the
+ * *preview*: a row cover's focus moves the featured content to that game
+ * (identity, facts, actions), and the featured game returns when the
+ * focus comes home. Below it, the library continues as horizontal rows:
+ * Continue playing, Favourites, Platforms (chips), Recently added,
+ * Collections. X opens the section menu.
  *
- * While the library is still streaming in, the rows fill in progressively
- * as pages arrive — the dashboard is the streamed library's face.
+ * The chrome frames it: the header brands the app on the left and counts
+ * the library on the right, the footer carries the contextual controller
+ * hints (the build stamp lives there too — identity trivia does not
+ * compete with the brand), and everything sits in one ambient radial
+ * glow (`AmbientBackdrop`) — the masking bands are slices of the same
+ * backdrop, so the scrolled rows fade into the atmosphere, not into a
+ * flat edge.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Rect, Text, useDimensions, useParent } from 'react-tela';
-import { colors, fontFamily, radius } from '../theme';
+import { useDimensions, useParent } from 'react-tela';
+import { colors, radius } from '../theme';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
 import { useDragScroll } from '../hooks/use-drag-scroll';
 import { BUILD_ID } from '../version';
 import { measure } from '../text';
 import { DashboardHeader } from './DashboardHeader';
-import { HintBar, HintBarBackdrop } from './HintBar';
-import { EmptyState } from './EmptyState';
-import { Spinner } from './Spinner';
+import { AmbientBackdrop, EmptyState, ErrorState, FocusRing, HintBar, LoadingState, Text } from './ui';
 import { play, usePlayState } from '../play';
 import { buildHero, heroForTile, primaryRow } from './dashboard/hero';
 import {
-	COVER_H,
-	COVER_W,
 	HERO_PAGER,
 	MARGIN_X,
 	PITCH_X,
@@ -52,6 +53,8 @@ import {
 	ROWS_Y,
 	ROW_H,
 	TILE_X0,
+	fsRowCount,
+	fsRowLabel,
 } from './dashboard/layout';
 import { buildDisplayRows, type DisplayRow } from './dashboard/section-rows';
 import { HeroCard } from './dashboard/HeroCard';
@@ -147,7 +150,12 @@ export function LibrarySections({
 	const activeRow = focusRow >= 0 ? rows[focusRow] : undefined;
 	const focusMin = activeRow !== undefined && activeRow.section === null ? 0 : -1;
 	const focusCount = activeRow === undefined ? 0 : activeRow.kind === 'chips' ? activeRow.chips.length : activeRow.tiles.length;
-	const focusSel = Math.min(Math.max(sel, Math.max(focusMin, 0)), Math.max(focusMin, focusCount - 1));
+	// The clamp's lower bound is `focusMin` itself: -1 is a real position
+	// (the row's header) on rows that open a section, and clamping it up to
+	// 0 here would strand the header focus — nothing could ever land on it
+	// (Left from the first cover, Down from the hero, a SectionMenu jump),
+	// even though every one of those paths sets sel = -1 on purpose.
+	const focusSel = Math.min(Math.max(sel, focusMin), Math.max(focusMin, focusCount - 1));
 
 	// ── the hero previews the focus ───────────────────────────────────────
 
@@ -188,6 +196,7 @@ export function LibrarySections({
 	const [heroMsg, setHeroMsg] = useState('');
 	useEffect(() => {
 		setHeroMsg('');
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [hero?.title.key, hero?.discIndex]);
 	const heroSelCl = hero === null ? 1 : Math.min(Math.max(heroSel, 0), heroMax);
 
@@ -426,6 +435,32 @@ export function LibrarySections({
 	// line, because losing "Saved library shown — update failed" silently
 	// would strand the user.
 	const headingInfo = status !== '' && (busy || /fail|cannot|cancel|shown|error/i.test(status));
+	const statusFailed = /fail|cannot|cancel|error/i.test(status);
+
+	// The footer's controller hints describe the action the focused target
+	// actually performs — the primary button says its own verb ("A play
+	// game" / "A install game"), the rows say what a cover opens, and the
+	// menu replaces everything with its two exits.
+	const hints: string[] = (() => {
+		if (menuOpen) return ['A jump', 'B close'];
+		if (hero !== null && (focusRow < 0 || rows.length === 0)) {
+			const a =
+				heroSelCl === 1
+					? heroPrimary !== null && heroPrimary.enabled
+						? heroPrimary.label.toLowerCase()
+						: 'select'
+					: heroSelCl === 2
+						? 'sync saves'
+						: heroSelCl === 3
+							? 'details'
+							: heroSelCl === HERO_PAGER
+								? 'discs'
+								: 'open';
+			return [`A ${a}`, 'B settings', 'X sections', '+ rows'];
+		}
+		if (hero === null) return ['B settings'];
+		return ['A open', 'B settings', 'X sections', '+ featured'];
+	})();
 
 	const rowTiles: React.ReactNode[] = [];
 	const focusRing: React.ReactNode[] = [];
@@ -451,35 +486,19 @@ export function LibrarySections({
 		// The header: the row's name and its count, above the covers.
 		// It is the row's focus target: left from the first cover lands
 		// on it, and A opens the row (chips rows focus their chips).
-		//
-		// `textBaseline="alphabetic"`: react-tela defaults to "top", which
-		// anchors the *line box* — its height depends on the font, and the
-		// device font's ascent is tall enough to push the glyphs into the
-		// covers below. Baseline anchoring is font-stable, so the same
-		// layout holds on the box and in the preview.
-		const labelW = measure(ctx, r.label, 16);
-		const countW = measure(ctx, r.countLabel, 11);
+		const labelW = measure(ctx, r.label, fsRowLabel);
+		const countW = measure(ctx, r.countLabel, fsRowCount);
 		rowTiles.push(
 			<Text
 				key={`${r.id}-label`}
 				x={MARGIN_X}
-				y={rowY + 18}
-				fontFamily={fontFamily}
-				fontSize={16}
-				textBaseline="alphabetic"
-				fill={rowFocused && focusSel < 0 ? colors.textPrimary : colors.textSecondary}
+				y={rowY + 21}
+				variant="label"
+				color={rowFocused && focusSel < 0 ? colors.textPrimary : undefined}
 			>
 				{r.label}
 			</Text>,
-			<Text
-				key={`${r.id}-count`}
-				x={MARGIN_X + labelW + 10}
-				y={rowY + 18}
-				fontFamily={fontFamily}
-				fontSize={11}
-				textBaseline="alphabetic"
-				fill={colors.textFaint}
-			>
+			<Text key={`${r.id}-count`} x={MARGIN_X + labelW + 10} y={rowY + 21} variant="micro">
 				{r.countLabel}
 			</Text>,
 		);
@@ -499,58 +518,43 @@ export function LibrarySections({
 
 		rowTiles.push(<TileRow key={`${r.id}-tiles`} row={r} y={rowY} focused={rowFocused} focusSel={focusSel} maxCol={maxCol} />);
 
-		// The focus ring: exactly one, around the header or the focused
-		// cover. It is drawn above the masking bands, so it is pushed onto
-		// its own array (the tiles must not).
+		// The row header's focus ring: exactly one, around the header of
+		// the focused row. It is drawn above the masking bands, so it is
+		// pushed onto its own array (the tiles must not — a focused cover
+		// draws its own ring inside its card).
 		if (rowFocused && focusSel < 0) {
 			focusRing.push(
-				<Rect
+				<FocusRing
 					key={`ring-${r.id}-label`}
-					x={MARGIN_X - 8}
-					y={rowY + 2}
-					width={labelW + countW + 34}
+					x={MARGIN_X}
+					y={rowY + 1}
+					width={labelW + countW + 18}
 					height={30}
-					stroke={colors.accent}
+					radius={radius.lg}
+					pad={5}
 					lineWidth={3}
-					borderRadius={radius.lg}
 				/>,
 			);
-		} else if (rowFocused) {
-			const t = r.tiles[focusSel];
-			if (t !== undefined) {
-				focusRing.push(
-					<Rect
-						key={`ring-${r.id}-${t.key}`}
-						x={TILE_X0 + focusSel * PITCH_X - 5}
-						y={rowY + 26 - 5}
-						width={COVER_W + 10}
-						height={COVER_H + 10}
-						stroke={colors.accent}
-						lineWidth={3}
-						borderRadius={radius.lg}
-					/>,
-				);
-			}
 		}
 	});
 
 	return (
 		<>
-			<Rect width={dims.width} height={dims.height} fill={colors.bg} />
+			{/* ── the atmosphere ─────────────────────────────────────── */}
+			<AmbientBackdrop width={dims.width} height={dims.height} />
 
 			{rowTiles}
 
 			{/*
-			 * Two opaque bands mask the rows that overflow the viewport
-			 * (the grid's trick). The hero and the chrome are drawn on top.
+			 * The masking bands are slices of the same ambient backdrop: the
+			 * scrolled rows disappear into the atmosphere the hero sits in,
+			 * not into a flat edge cut through the glow.
 			 */}
-			<Rect x={0} y={0} width={dims.width} height={ROWS_Y} fill={colors.bg} />
-			<Rect
-				x={0}
+			<AmbientBackdrop width={dims.width} height={ROWS_Y} />
+			<AmbientBackdrop
 				y={ROWS_Y + ROWS_H}
 				width={dims.width}
 				height={Math.max(0, dims.height - ROWS_Y - ROWS_H)}
-				fill={colors.bg}
 			/>
 
 			{focusRing}
@@ -577,32 +581,35 @@ export function LibrarySections({
 
 			<DashboardHeader
 				meta={meta}
-				build={BUILD_ID}
 				subtitle={demo ? 'DEMO MODE — MOCKED DATA' : headingInfo ? status : ''}
 				error={!demo && headingInfo && /fail|cannot|shown/i.test(status)}
 				onSettings={onBack}
 			/>
 
-			{empty && (
-				<>
-					{busy && <Spinner x={dims.width / 2} y={ROWS_Y + 120} active />}
+			{/* ── the loading / empty / error states ─────────────────── */}
+			{empty &&
+				(busy ? (
+					<LoadingState
+						label="Connecting to RomM…"
+						detail={status !== '' && status !== 'Connecting…' ? status : 'Loading your library'}
+						centerY={ROWS_Y + 150}
+					/>
+				) : !demo && statusFailed ? (
+					<ErrorState title="Connection failed" detail={status} centerY={ROWS_Y + 170} />
+				) : (
 					<EmptyState
-						glyph={busy ? '' : '∅'}
-						title={busy ? 'Connecting to RomM…' : 'Your library is empty'}
-						detail={
-							busy
-								? status !== '' && status !== 'Connecting…'
-									? status
-									: 'Loading your library'
-								: 'Once RomM has roms in it, they will show up here.'
-						}
+						glyph="∅"
+						title="Your library is empty"
+						detail="Once RomM has roms in it, they will show up here."
 						centerY={ROWS_Y + 170}
 					/>
-				</>
-			)}
+				))}
 
-			<HintBarBackdrop />
-			{menuOpen ? <HintBar hints={['A jump', 'B close']} /> : <HintBar hints={['A select', 'B back', 'X sections', '+ browse']} />}
+			{/* ── the footer: contextual hints, and the build stamp ──── */}
+			<HintBar hints={hints} />
+			<Text x={MARGIN_X} y={dims.height - 16} variant="micro" color={colors.textFaint}>
+				{`build ${BUILD_ID}`}
+			</Text>
 
 			{/* ── the section menu (X) ─────────────────────────────────── */}
 			{menuOpen && <SectionMenu items={menuItems} focus={menuFocus ?? 0} />}

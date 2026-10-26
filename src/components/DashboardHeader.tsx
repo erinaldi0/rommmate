@@ -3,24 +3,24 @@
  *
  * Louder than the shared `Header` by design: the dashboard is the one
  * screen where the app brands itself. A glyph tile and the product name
- * sit on the left under a tagline; the library count and the build stamp
- * sit on the right, next to the settings gear (a tap opens settings; on
- * the gamepad, B does the same).
+ * sit on the left under the tagline; the library count sits on the right,
+ * next to the settings gear (a tap opens settings; on the gamepad, B does
+ * the same). The build stamp lives in the footer now — identity trivia
+ * does not compete with the brand.
  *
  * All drawn shapes: the device font has no emoji, so the glyphs are simple
  * abstractions — a controller-ish pill for the tile, a ring with teeth for
  * the gear.
  */
 import React from 'react';
-import { Rect, Text, useDimensions, useParent } from 'react-tela';
-import { colors, fontFamily, fontSize, radius, space } from '../theme';
+import { Rect, useDimensions } from 'react-tela';
+import { colors, fontSize, radius, space } from '../theme';
 import { useCanvasTap } from '../hooks/use-canvas-tap';
+import { Text } from './ui';
 
 interface Props {
 	/** Right-aligned count, e.g. "1214 games". */
 	meta?: string;
-	/** Build identifier under the count. */
-	build?: string;
 	/** Line under the title: the tagline, or a status/error message. */
 	subtitle?: string;
 	/** True on a monospace-ish danger line (connection failures). */
@@ -35,7 +35,7 @@ const TILE = { x: space.xl, y: 14, size: 54 };
 /** The gear's bounding box, from the screen edge (mirror of the tile). */
 const GEAR = { margin: space.xl, size: 44, y: 19 };
 
-export function DashboardHeader({ meta = '', build = '', subtitle = '', error = false, onSettings }: Props) {
+export function DashboardHeader({ meta = '', subtitle = '', error = false, onSettings }: Props) {
 	const dims = useDimensions();
 
 	const gearX = dims.width - GEAR.margin - GEAR.size;
@@ -97,49 +97,31 @@ export function DashboardHeader({ meta = '', build = '', subtitle = '', error = 
 				// Alphabetic baseline: the display size's ascent is tall, so the
 				// baseline sits mid-tile — a higher y pushes the caps off-screen.
 				y={TILE.y + 30}
-				fontFamily={fontFamily}
-				fontSize={fontSize.display}
-				textBaseline="alphabetic"
-				fill={colors.textPrimary}
+				variant="display"
+				color={colors.textPrimary}
 			>
 				RomMmate
 			</Text>
 			<Text
 				x={TILE.x + TILE.size + 18}
 				y={TILE.y + TILE.size + 6}
-				fontFamily={fontFamily}
-				fontSize={fontSize.tiny}
-				textBaseline="alphabetic"
-				fill={error ? colors.danger : colors.textFaint}
+				variant="caption"
+				size={fontSize.tiny}
+				color={error ? colors.danger : colors.textMuted}
 			>
 				{subtitle !== '' ? subtitle : 'YOUR RETRO COLLECTION'}
 			</Text>
 
-			{/* ── right: count, build, gear ───────────────────────── */}
+			{/* ── right: count, gear ─────────────────────────────────── */}
 			{meta !== '' && (
 				<Text
 					x={gearX - GEAR.size}
 					y={TILE.y + 6}
-					fontFamily={fontFamily}
-					fontSize={fontSize.heading}
-					textBaseline="alphabetic"
-					fill={colors.textSecondary}
-					textAlign="right"
+					variant="heading"
+					color={colors.textSecondary}
+					align="right"
 				>
 					{meta}
-				</Text>
-			)}
-			{build !== '' && (
-				<Text
-					x={gearX - GEAR.size}
-					y={TILE.y + TILE.size + 6}
-					fontFamily={fontFamily}
-					fontSize={fontSize.tiny}
-					textBaseline="alphabetic"
-					fill={colors.textFaint}
-					textAlign="right"
-				>
-					{`build ${build}`}
 				</Text>
 			)}
 
@@ -192,8 +174,6 @@ export function DashboardHeader({ meta = '', build = '', subtitle = '', error = 
 					</>
 				);
 			})()}
-
-			{/* The count's small icon: a tiny cartridge above the meta. */}
 		</>
 	);
 }

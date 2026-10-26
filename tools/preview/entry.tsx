@@ -468,7 +468,10 @@ function SpinnerView() {
  *
  * The rows that the dashboard derives (continue playing, favourites,
  * platforms, recently added, collections) are all exercised against the
- * mock's play state, favourite flags and multi-disc releases.
+ * mock's play state, favourite flags and multi-disc releases. State
+ * knobs: `empty=1` drops every row (the empty state), `busy=1` keeps the
+ * connection in flight (the loading state) and `fail=1` shows a failed
+ * connection (the error state).
  */
 function SectionsView() {
 	const titles = useMemo(() => groupTitles(ART_GAMES), []);
@@ -476,15 +479,24 @@ function SectionsView() {
 	// The platforms strip's input: the mock platform entries, id-matched
 	// to the games (built beside `ART_GAMES`).
 	const platforms = ART_PLATFORMS;
+	const empty = params.get('empty') === '1';
+	const busy = params.get('busy') === '1';
+	const failed = params.get('fail') === '1';
 	return (
 		<LibrarySections
-			status={`Demo mode — ${ART_GAMES.length} mock games`}
-			busy={false}
-			demo
-			titles={titles}
-			favoriteTitles={favTitles}
-			platforms={platforms}
-			collections={MOCK_COLLECTIONS}
+			status={
+				failed
+					? 'Connection failed: could not reach the instance'
+					: busy
+						? 'Loading library… 214 / 1266'
+						: `Demo mode — ${ART_GAMES.length} mock games`
+			}
+			busy={busy}
+			demo={!empty}
+			titles={empty ? [] : titles}
+			favoriteTitles={empty ? [] : favTitles}
+			platforms={empty ? [] : platforms}
+			collections={empty ? [] : MOCK_COLLECTIONS}
 			discSelections={{}}
 			onOpenTitle={(t) => {
 				log.push(`title:${t.name}`);
