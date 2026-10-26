@@ -21,7 +21,11 @@ interface Props {
 	y: number;
 	/** True when this row owns the focus. */
 	focused: boolean;
-	/** The focused cover's index (≥ 0; the label is handled by the screener). */
+	/**
+	 * The focused cover's index (the label is handled by the screener).
+	 * -1 when the row does not own the focus — the screener normalises
+	 * it, so a horizontal move in another row cannot re-render this one.
+	 */
 	focusSel: number;
 	/**
 	 * How many columns fit the screen: tiles beyond it never display, so
@@ -30,7 +34,13 @@ interface Props {
 	maxCol: number;
 }
 
-export function TileRow({ row, y, focused, focusSel, maxCol }: Props) {
+/**
+ * Memoised: the screener re-renders on every focus move and scroll, and
+ * the row's output is a pure function of these props — a row whose focus,
+ * column and geometry did not change keeps its committed entity tree and
+ * skips its per-card text measurement entirely.
+ */
+export const TileRow = React.memo(function TileRow({ row, y, focused, focusSel, maxCol }: Props) {
 	return (
 		<>
 			{/* The header text is drawn by the screener (it also sizes the
@@ -64,4 +74,4 @@ export function TileRow({ row, y, focused, focusSel, maxCol }: Props) {
 			})}
 		</>
 	);
-}
+});

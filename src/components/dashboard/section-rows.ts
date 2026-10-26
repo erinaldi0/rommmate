@@ -29,6 +29,13 @@ export interface Tile {
 	fit?: Fit;
 	/** The disc the tile shows, for multi-disc titles. */
 	discIndex?: number;
+	/**
+	 * The shown disc's 0-based position in `title.discs` — what the hero
+	 * preview indexes the title's discs with (`discIndex` is the 1-based
+	 * release slot the badge prints; the two only agree on single-disc
+	 * titles).
+	 */
+	discRealIndex?: number;
 	discCount?: number;
 	/** What A does with this cover (title tiles open the title instead). */
 	section?: LibrarySection;
@@ -261,6 +268,7 @@ return {
 	name: t.name,
 	sub,
 	discIndex: t.knownDiscs > 1 ? releaseSlot : undefined,
+	discRealIndex: realIndex,
 	discCount: t.knownDiscs > 1 ? t.knownDiscs : undefined,
 	title: t,
 };

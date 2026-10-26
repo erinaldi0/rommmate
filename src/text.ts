@@ -5,10 +5,28 @@
  * of lines: a long title would grow downwards and overlap whatever sits
  * below it. Measuring here lets the layout decide how many lines a string
  * gets and ellipsise the last one when it does not fit.
+ *
+ * Every result is memoised. Canvas measurement is repeated for identical
+ * inputs on every commit — the dashboard alone re-measures dozens of
+ * labels per focus move — and `truncate` re-measures once per character
+ * while it scans. Results depend only on the arguments (`measure` sets the
+ * font itself, the family is a constant, and the app draws on one canvas),
+ * so flat tables answer the repeats without touching the canvas.
  */
 import { fontFamily } from './theme';
 
 const ELLIPSIS = '…';
+
+/**
+ * The memo tables, capped coarsely: a long session with a large library
+ * grows them, and an occasional clear is cheaper than an LRU. The entries
+ * are short strings, so the worst case is bounded memory for unbounded
+ * time.
+ */
+const MEASURE_CACHE_MAX = 5000;
+const measureCache = new Map<string, number>();
+const truncateCache = new Map<string, string>();
+const wrapCache = new Map<string, string[]>();
 
 /**
  * The slice of a canvas context the helpers below need.
@@ -41,8 +59,15 @@ export function measure(
 	text: string,
 	size: number,
 ): number {
+	const key = `${size}|${text}`;
+	const hit = measureCache.get(key);
+	if (hit !== undefined) return hit;
+
 	ctx.font = `${size}px ${fontFamily}`;
-	return ctx.measureText(text).width;
+	const width = ctx.measureText(text).width;
+	if (measureCache.size >= MEASURE_CACHE_MAX) measureCache.clear();
+	measureCache.set(key, width);
+	return width;
 }
 
 /**
@@ -51,8 +76,29 @@ export function measure(
  * Words longer than `maxWidth` are left intact on their own line (breaking
  * them would mangle names like "F-Zero"). When the text does not fit in
  * `maxLines`, the overflow is folded into the last line and ellipsised.
+ *
+ * The returned array is shared between calls with the same arguments —
+ * callers must treat it as read-only.
  */
 export function wrapLines(
+	ctx: TextContext,
+	text: string,
+	maxWidth: number,
+	maxLines: number,
+	size: number,
+): string[] {
+	const key = `${size}|${maxWidth}|${maxLines}|${text}`;
+	const hit = wrapCache.get(key);
+	if (hit !== undefined) return hit;
+
+	const lines = wrapLinesUncached(ctx, text, maxWidth, maxLines, size);
+	if (wrapCache.size >= MEASURE_CACHE_MAX) wrapCache.clear();
+	wrapCache.set(key, lines);
+	return lines;
+}
+
+/** `wrapLines` without the memo table (see the cache note at the top). */
+function wrapLinesUncached(
 	ctx: TextContext,
 	text: string,
 	maxWidth: number,
@@ -95,6 +141,23 @@ export function wrapLines(
 
 /** Cuts `text` down to `maxWidth`, ending with an ellipsis when it was cut. */
 export function truncate(
+	ctx: TextContext,
+	text: string,
+	maxWidth: number,
+	size: number,
+): string {
+	const key = `${size}|${maxWidth}|${text}`;
+	const hit = truncateCache.get(key);
+	if (hit !== undefined) return hit;
+
+	const cut = truncateUncached(ctx, text, maxWidth, size);
+	if (truncateCache.size >= MEASURE_CACHE_MAX) truncateCache.clear();
+	truncateCache.set(key, cut);
+	return cut;
+}
+
+/** `truncate` without the memo table (see the cache note at the top). */
+function truncateUncached(
 	ctx: TextContext,
 	text: string,
 	maxWidth: number,

@@ -76,8 +76,12 @@ export const coverCardTextH = TITLE_LINE_H * 2 + PLATFORM_LINE_H;
 
 /**
  * A game's cover card. See the module docs for the invariants it keeps.
+ *
+ * Memoised: every prop is a primitive, so a re-render of the owning screen
+ * (a focus move, a scroll) leaves a card whose focus, artwork and geometry
+ * did not change entirely unrendered — no re-wrap of its title lines.
  */
-export function CoverCard({
+export const CoverCard = React.memo(function CoverCard({
 	x,
 	y,
 	width,
@@ -181,4 +185,4 @@ export function CoverCard({
 			)}
 		</>
 	);
-}
+});

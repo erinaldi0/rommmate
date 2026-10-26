@@ -66,6 +66,9 @@ import { SectionMenu } from './dashboard/SectionMenu';
 import { TileRow } from './dashboard/TileRow';
 import type { LibrarySection, RommCollection, RommGame, RommPlatform, RommTitle } from '../romm';
 
+/** How long the focus must rest before the hero preview follows it. */
+const HERO_SETTLE_MS = 200;
+
 interface Props {
 	/** Status line from the client (load result, etc.). */
 	status: string;
@@ -174,17 +177,39 @@ export function LibrarySections({
 	// follows it — its identity, facts and actions become the focused
 	// game's, like the home menu's preview pane. "Featured" below is the
 	// *home* game it returns to.
+	//
+	// The follow is settled, not live: the preview trails the focus by
+	// HERO_SETTLE_MS, so sweeping across a row of covers costs one hero
+	// swap at the end instead of one per press (every swap re-measures
+	// the hero's text and resolves its box art through the cover
+	// pipeline). The rings, the row highlight, A and the hints stay on
+	// the live focus — only this pane lags. Returning to the hero zone
+	// (a row of -1) snaps straight back to the featured game with no
+	// settle: its artwork is already in memory from mount, so the return
+	// home is instant and free.
+	const [preview, setPreview] = useState({ row: focusRow, sel: focusSel });
+	useEffect(() => {
+		const t = setTimeout(
+			() =>
+				setPreview((p) =>
+					p.row === focusRow && p.sel === focusSel ? p : { row: focusRow, sel: focusSel },
+				),
+			HERO_SETTLE_MS,
+		);
+		return () => clearTimeout(t);
+	}, [focusRow, focusSel]);
+
 	const hero = useMemo(() => {
 		if (featured === null) return null;
 		if (focusRow < 0) return featured;
-		const r = rows[focusRow];
+		const r = rows[preview.row];
 		if (r === undefined || r.kind !== 'tiles') return featured;
-		const t = r.tiles[focusSel];
+		const t = r.tiles[preview.sel];
 		if (t === undefined) return featured;
-		if (t.title !== undefined) return heroForTile(t.title, t.discIndex ?? 0);
+		if (t.title !== undefined) return heroForTile(t.title, t.discRealIndex ?? 0);
 		return featured;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [featured, rows, focusRow, focusSel]);
+	}, [featured, rows, focusRow, preview.row, preview.sel]);
 
 	const heroMulti = hero !== null && hero.knownDiscs > 1;
 	const heroMax = heroMulti ? HERO_PAGER : 3;
@@ -550,20 +575,32 @@ export function LibrarySections({
 			</Text>,
 		);
 
+		// The selection is only meaningful to the row that owns the focus;
+		// normalising it to -1 elsewhere keeps the memoised rows from
+		// seeing a changed prop on every horizontal move in another row.
 		if (r.kind === 'chips') {
 			rowTiles.push(
 				<PlatformChipStrip
 					key={`${r.id}-chips`}
 					chips={r.chips}
 					y={rowY + 26}
-					focusSel={focusSel}
+					focusSel={rowFocused ? focusSel : -1}
 					focused={rowFocused}
 				/>,
 			);
 			return;
 		}
 
-		rowTiles.push(<TileRow key={`${r.id}-tiles`} row={r} y={rowY} focused={rowFocused} focusSel={focusSel} maxCol={maxCol} />);
+		rowTiles.push(
+			<TileRow
+				key={`${r.id}-tiles`}
+				row={r}
+				y={rowY}
+				focused={rowFocused}
+				focusSel={rowFocused ? focusSel : -1}
+				maxCol={maxCol}
+			/>,
+		);
 
 		// The row header's focus ring: exactly one, around the header of
 		// the focused row. It is drawn above the masking bands, so it is

@@ -30,13 +30,21 @@ interface Props {
 	chips: PlatformChip[];
 	/** The chip strip's top edge on screen (already scrolled). */
 	y: number;
-	/** Index of the chip that owns the focus. */
+	/** Index of the chip that owns the focus; -1 when the strip does not
+	 * own the focus (the screener normalises it — see the memo note). */
 	focusSel: number;
 	/** True when the strip's row owns the focus. */
 	focused: boolean;
 }
 
-export function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
+/**
+ * Memoised like `TileRow`: the screener re-renders on every focus move,
+ * and the strip's layout is a pure function of these props (plus its own
+ * scroll state). The screener normalises `focusSel` to -1 for strips that
+ * do not own the focus, so a horizontal move elsewhere skips the re-measure
+ * of every chip label here.
+ */
+export const PlatformChipStrip = React.memo(function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
 	const dims = useDimensions();
 	const { ctx } = useParent();
 
@@ -151,4 +159,4 @@ export function PlatformChipStrip({ chips, y, focusSel, focused }: Props) {
 			})}
 		</>
 	);
-}
+});
