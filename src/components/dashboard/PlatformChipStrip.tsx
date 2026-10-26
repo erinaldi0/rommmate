@@ -16,6 +16,8 @@ import { Rect, useDimensions, useParent } from 'react-tela';
 import { colors, radius } from '../../theme';
 import { measure, truncate } from '../../text';
 import { CoverImage } from '../CoverImage';
+import { PlatformIcon } from '../PlatformIcon';
+import { platformIconSlugExact, DEFAULT_PLATFORM_SLUG } from '../../platform-icons';
 import { Text } from '../ui';
 import { CHIP_GAP, MARGIN_X, TILE_X0 } from './layout';
 import type { PlatformChip } from './section-rows';
@@ -55,8 +57,11 @@ export const PlatformChipStrip = React.memo(function PlatformChipStrip({ chips, 
 		return chips.map((c) => {
 			const textW = measure(ctx, truncate(ctx, c.name, MAX_LABEL_W, LABEL_FS), LABEL_FS);
 			const countW = measure(ctx, `${c.count}`, COUNT_FS);
-			const iconW = c.logoUrl === '' ? 0 : ICON + 8;
-			return 12 + iconW + textW + 10 + countW + 14;
+			// Every chip carries an icon now: the bundled artwork the
+			// platform resolves to (or, for a platform the bundled set
+			// does not know, the server's own), so the room is always
+			// reserved and the layout never re-flows.
+			return 12 + ICON + 8 + textW + 10 + countW + 14;
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [chips]);
@@ -102,8 +107,13 @@ export const PlatformChipStrip = React.memo(function PlatformChipStrip({ chips, 
 
 				const isFocused = focused && i === focusSel;
 				const label = truncate(ctx, c.name, MAX_LABEL_W, LABEL_FS);
-				const iconW = c.logoUrl === '' ? 0 : ICON + 8;
-				const labelX = x + 12 + iconW;
+				// The bundled icon when the platform resolves to one, else the
+				// server's own art (custom platform artwork, IGDB logos — the
+				// only path that still downloads), else the generic icon.
+				const slug = platformIconSlugExact(c.name, c.logoUrl);
+				const remote = slug === '' && c.logoUrl !== '';
+				const iconSlug = slug !== '' ? slug : remote ? '' : DEFAULT_PLATFORM_SLUG;
+				const labelX = x + 12 + ICON + 8;
 				const labelW = measure(ctx, label, LABEL_FS);
 				const countX = labelX + labelW + 10;
 
@@ -120,7 +130,8 @@ export const PlatformChipStrip = React.memo(function PlatformChipStrip({ chips, 
 							borderRadius={radius.pill}
 							pointerEvents={false}
 						/>
-						{c.logoUrl !== '' && (
+						{iconSlug !== '' && <PlatformIcon slug={iconSlug} x={x + 12} y={y + (CHIP_H - ICON) / 2} size={ICON} />}
+						{remote && (
 							<CoverImage
 								url={c.logoUrl}
 								x={x + 12}

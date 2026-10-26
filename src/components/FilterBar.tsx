@@ -2,7 +2,9 @@ import React, { useEffect, useRef } from 'react';
 import { Rect, Text, useDimensions, useParent } from 'react-tela';
 import { colors, fontFamily, fontSize, radius, space } from '../theme';
 import { measure, truncate, type TextContext } from '../text';
-import type { FilterChip } from '../lib/library-filters';
+import { SEARCH_KEY, type FilterChip } from '../lib/library-filters';
+import { PlatformIcon } from './PlatformIcon';
+import { platformIconSlug } from '../platform-icons';
 
 interface Props {
 	items: FilterChip[];
@@ -19,11 +21,15 @@ const CHIP_PAD_X = 14;
 const CHIP_GAP = 10;
 const COUNT_GAP = 12;
 const MAX_LABEL_W = 220;
+/** The platform icon and the gap behind it (the search chip has none). */
+const ICON = 22;
+const ICON_GAP = 8;
 
 /** Width of a chip, given its label and count. */
 function chipWidth(ctx: TextContext, item: FilterChip): number {
 	const label = truncate(ctx, item.label, MAX_LABEL_W, fontSize.small);
-	let width = CHIP_PAD_X + measure(ctx, label, fontSize.small) + CHIP_PAD_X;
+	const icon = item.key === SEARCH_KEY ? 0 : ICON + ICON_GAP;
+	let width = CHIP_PAD_X + icon + measure(ctx, label, fontSize.small) + CHIP_PAD_X;
 	if (item.count !== undefined) {
 		width += COUNT_GAP + measure(ctx, String(item.count), fontSize.tiny);
 	}
@@ -94,6 +100,10 @@ export function FilterBar({ items, focusedIndex, focused, summary }: Props) {
 
 				const isFocused = focused && i === focusedIndex;
 				const label = truncate(ctx, item.label, MAX_LABEL_W, fontSize.small);
+				// The platform chips wear their platform's icon; the search chip
+				// stays plain (it is an action, not a platform).
+				const slug = item.key === SEARCH_KEY ? '' : platformIconSlug(item.label, '');
+				const iconRoom = slug === '' ? 0 : ICON + ICON_GAP;
 
 				return (
 					<React.Fragment key={item.key}>
@@ -114,8 +124,11 @@ export function FilterBar({ items, focusedIndex, focused, summary }: Props) {
 							borderRadius={radius.pill}
 							alpha={focused ? 1 : 0.5}
 						/>
+						{slug !== '' && (
+							<PlatformIcon slug={slug} x={x + CHIP_PAD_X} y={y + (CHIP_H - ICON) / 2} size={ICON} />
+						)}
 						<Text
-							x={x + CHIP_PAD_X}
+							x={x + CHIP_PAD_X + iconRoom}
 							y={y + 11}
 							fontFamily={fontFamily}
 							fontSize={fontSize.small}

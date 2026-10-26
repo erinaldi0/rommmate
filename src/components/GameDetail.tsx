@@ -31,6 +31,8 @@ import { wrapLines } from '../text';
 import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
 import { CoverImage, type CoverStatus } from './CoverImage';
+import { PlatformIcon } from './PlatformIcon';
+import { platformIconSlug } from '../platform-icons';
 import { play, usePlayState } from '../play';
 import { downloadQueue } from '../roms/download';
 import { localSaveFiles } from '../saves/inventory';
@@ -523,17 +525,30 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 				</Text>
 			))}
 			{identity !== '' && (
-				<Text
-					x={COL_X}
-					y={metaY}
-					variant="label"
-					size={fontSize.small}
-					color={colors.textSecondary}
-					maxWidth={COL_W}
-					overflow="ellipsis"
-				>
-					{identity}
-				</Text>
+				<>
+					{/* The platform's own icon leads the identity line (the
+						same prefix the home hero wears, so the two screens read
+						alike). */}
+					{game.platform !== '' && (
+						<PlatformIcon
+							slug={platformIconSlug(game.platform, '')}
+							x={COL_X}
+							y={metaY - 16}
+							size={20}
+						/>
+					)}
+					<Text
+						x={COL_X + (game.platform !== '' ? 28 : 0)}
+						y={metaY}
+						variant="label"
+						size={fontSize.small}
+						color={colors.textSecondary}
+						maxWidth={COL_W - (game.platform !== '' ? 28 : 0)}
+						overflow="ellipsis"
+					>
+						{identity}
+					</Text>
+				</>
 			)}
 
 			{/* The status pill — the same chip the home hero shows, so a

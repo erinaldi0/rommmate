@@ -10,6 +10,9 @@ romfs/*.map
 tools/preview/bundle.js
 tools/preview/*.png
 
+# Icon generator's download cache (the PNGs in romfs/ are the artifacts)
+tools/icons/cache/
+
 # Packaged executables
 *.nro
 *.nso

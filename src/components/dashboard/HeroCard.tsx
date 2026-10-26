@@ -13,6 +13,8 @@
 import React, { useState } from 'react';
 import { Rect, useParent } from 'react-tela';
 import { CoverImage, type CoverStatus } from '../CoverImage';
+import { PlatformIcon } from '../PlatformIcon';
+import { platformIconSlug } from '../../platform-icons';
 import { colors, fontSize, radius } from '../../theme';
 import { measure, truncate, wrapLines } from '../../text';
 import type { PlayState } from '../../play';
@@ -152,17 +154,30 @@ export function HeroCard({ hero, state, primary, focused, sel, multiDisc }: Prop
 				{titleText}
 			</Text>
 			{identity !== '' && (
-				<Text
-					x={HERO_COL_X}
-					y={HERO_Y + 64}
-					variant="label"
-					size={16}
-					color={colors.textSecondary}
-					maxWidth={HERO_TEXT_W}
-					overflow="ellipsis"
-				>
-					{identity}
-				</Text>
+				<>
+					{/* The platform's own icon leads the identity line — the
+						same prefix the detail screen wears, so the two read
+						alike. */}
+					{hero.platform !== '' && (
+						<PlatformIcon
+							slug={platformIconSlug(hero.platform, '')}
+							x={HERO_COL_X}
+							y={HERO_Y + 48}
+							size={20}
+						/>
+					)}
+					<Text
+						x={HERO_COL_X + (hero.platform !== '' ? 28 : 0)}
+						y={HERO_Y + 64}
+						variant="label"
+						size={16}
+						color={colors.textSecondary}
+						maxWidth={HERO_TEXT_W - (hero.platform !== '' ? 28 : 0)}
+						overflow="ellipsis"
+					>
+						{identity}
+					</Text>
+				</>
 			)}
 
 			{/* ── status chips ────────────────────────────────────── */}

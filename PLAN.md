@@ -439,6 +439,59 @@ The long-form notes lived here through v0.12; the git history keeps the detail.
 | **v17** | **The game detail screen rebuilt on the design system**: a three-column game page (box art + screenshot / identity + description + actions / installation card + facts + disc + save-sync), the action focus walk repaired (the secondaries were unreachable), and two shared bugs fixed on the way — the `Button` detail's negative `maxWidth` and the disc picker double-owning the controller over this screen (below) |
 | **v18** | **The controller-navigation audit**: one shared focus-navigation model (`lib/focus-nav.ts`) + focus memory across unmounts (`lib/focus-memory.ts`); the dashboard's swallowed Left/Right after a row change fixed (raw vs displayed focus can no longer disagree); the downloads queue scrolls (the focus used to walk onto rows it never rendered); the doctor's checklist de-focusabled (its "A check" hint advertised a dead button); the grid drops its second focus ring while the filter bar owns the focus; the settings screen joins the theme accent; hint bars tell the truth everywhere (below) |
 
+| **v19** | **Platform icons, bundled from RomM's own artwork**: the whole `frontend/assets/platforms` set rasterized to transparent PNGs in romfs (`tools/icons/generate.mjs`, headless-Chrome rasterizer — the Switch decodes PNG only, so the server's `.ico` never drew on-device), a slug resolver (`platform-icons.ts`: artwork URL → name table → generic default) and a safe-mount `PlatformIcon` — icons on the platforms chips strip, every filter-bar platform chip, and the hero + detail identity lines (below) |
+
+## v19 — Platform icons from the RomM asset set
+
+The dashboard's platform strip was built to wear the server's own
+artwork (`icon_url`) — but RomM serves it as `.ico`, and the Switch's
+decoder is PNG / JPEG / WebP only (nx.js `Image` is libpng /
+libjpeg-turbo / libwebp). On the console every platform logo silently
+failed to decode and the strip drew text-only; only the browser
+preview (Chrome decodes ICO) ever showed icons. The grid's filter bar
+knew platforms by name and never had artwork at all.
+
+So the artwork now ships with the app, from the same source RomM's
+web UI uses (`frontend/assets/platforms`, 198 slugs, CC BY 4.0 —
+mostly the Libretro set; the ATTRIBUTIONS file rides along in
+`romfs/assets/platforms/`):
+
+- **`tools/icons/generate.mjs`** downloads the sources (SVG preferred,
+  ICO fallback) and rasterizes each into a transparent 48×48
+  contain-fit PNG via headless Chrome — the one decoder on the dev
+  machine that reads both formats — then writes
+  `romfs/assets/platforms/<slug>.png` and the slug manifest
+  `src/platform-icons.generated.ts` the runtime resolves against.
+  Idempotent: a second run rasterizes nothing. ~800 KB for all 198.
+- **`src/platform-icons.ts`** maps a platform to its slug, best first:
+  the artwork URL it names (RomM serves `…/platforms/<slug>.ico`, so
+  the file it names *is* the slug), a display-name table (the demo
+  library has no server, and the filter chips know platforms by name
+  only), and the generic `default` gamepad as the floor — RomM's own
+  convention for unknown platforms. Every step is checked against the
+  manifest, so nothing can produce a broken image reference.
+- **`PlatformIcon`** mounts a bundled icon through the same safe-load
+  contract as `CoverImage` (prove the decode first — a rejecting
+  `<Image>` takes the frame down — plus the re-insert kick for
+  entities that move). No network, no cover pipeline: `Image.src`
+  reads `romfs:` directly on-device, and the browser preview loads the
+  same files over its static server.
+
+Where they appear: the **platforms chips strip** (bundled first, the
+server's own art only for a platform the set does not know, the
+generic icon last — the strip had a logo slot before; now every chip
+carries one), every **filter-bar platform chip** (22 px, the search
+chip stays plain), and the **identity lines** of the hero and the
+detail screen (the platform's icon leads the "platform · genre ·
+year" line, the same prefix on both so the two screens read alike).
+
+Verified in the preview with an entity probe (the icon `<Image>`s
+themselves: source + geometry — 8 chips on the strip, 6 visible
+filter chips, the hero and detail prefixes, all at the right slugs:
+n64/snes/psx/gb/gba/ngc/genesis/arcade from the mock's names), plus
+the v18 navigation suite re-run (chip geometry widened, still green),
+`tsc`, and the full `nxjs-nro` packaging with the assets in romfs.
+
 ## v18 — The controller-navigation audit
 
 Every screen kept its own focus state (that stayed — it is the app's
