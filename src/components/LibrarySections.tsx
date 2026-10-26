@@ -34,11 +34,13 @@
  * backdrop, so the scrolled rows fade into the atmosphere, not into a
  * flat edge.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDimensions, useParent } from 'react-tela';
 import { colors, radius } from '../theme';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
 import { useDragScroll } from '../hooks/use-drag-scroll';
+import { clamp, clampSel, followScroll } from '../lib/focus-nav';
+import { saveFocus, takeFocus } from '../lib/focus-memory';
 import { BUILD_ID } from '../version';
 import { measure } from '../text';
 import { DashboardHeader } from './DashboardHeader';
@@ -134,9 +136,17 @@ export function LibrarySections({
 	// `sel` is -1 for the row label, 0+ for a cover. The hero keeps its own
 	// index (`heroSel`): 0 cover, 1 primary, 2 sync, 3 more, 4 the pager
 	// (only when the release has several discs). `row` is -1 for the hero.
-	const [row, setRow] = useState(0);
-	const [sel, setSel] = useState(0);
-	const [heroSel, setHeroSel] = useState(1);
+	//
+	// The whole position is remembered across the unmount a full-screen
+	// route causes (downloads, doctor — the detail screen and the picker
+	// never unmount this one), so coming back lands where the player left
+	// instead of at the first row. See `lib/focus-memory`.
+	const home = takeFocus('dashboard', { row: 0, sel: 0, heroSel: 1, scroll: 0 });
+	const [row, setRow] = useState(home.row);
+	const [sel, setSel] = useState(home.sel);
+	const [heroSel, setHeroSel] = useState(home.heroSel);
+	/** The latest position, kept for the unmount save (updated once `scrollTop` exists, below). */
+	const navRef = useRef({ row: home.row, sel: home.sel, heroSel: home.heroSel, scroll: home.scroll });
 
 	// The section menu (X): null closed, else the focused item's index.
 	const [menuFocus, setMenuFocus] = useState<number | null>(null);
@@ -202,6 +212,36 @@ export function LibrarySections({
 
 	const open = !paused && !menuOpen && (hero !== null || rows.length > 0);
 
+	/**
+	 * The focus range of a row: its lowest focusable index (rows whose
+	 * header opens a section focus the header at -1; browsing-aid rows
+	 * start at their covers/chips) and its item count.
+	 */
+	const rowSelRange = (index: number): { min: number; count: number } | null => {
+		const r = rows[index];
+		if (r === undefined) return null;
+		return { min: r.section === null ? 0 : -1, count: r.kind === 'chips' ? r.chips.length : r.tiles.length };
+	};
+
+	/**
+	 * Move the row focus by `delta`, normalising the column position into
+	 * the target row.
+	 *
+	 * The raw `sel` used to survive a row change untouched: moving from a
+	 * 9-cover row onto a 3-cover one left it pointing at 8, the *display*
+	 * clamped it to 2 — and the first Left/Right afterwards was spent
+	 * clamping the raw index back into range instead of moving. One
+	 * swallowed press per row change. Normalising here means the raw
+	 * focus and the displayed focus never disagree.
+	 */
+	const moveRow = (delta: number) => {
+		const next = clamp(focusRow + delta, hero !== null ? -1 : 0, rows.length - 1);
+		if (next === focusRow) return;
+		setRow(next);
+		const range = rowSelRange(next);
+		if (range !== null) setSel((s) => clampSel(s, range.min, range.count));
+	};
+
 	useDirection(
 		'Up',
 		() => {
@@ -209,9 +249,9 @@ export function LibrarySections({
 				if (hero !== null) setRow(-1);
 				return;
 			}
-			setRow((r) => Math.max(0, r - 1));
+			moveRow(-1);
 		},
-		[focusRow, rows.length, hero],
+		[focusRow, rows, hero],
 		open,
 	);
 	useDirection(
@@ -223,9 +263,9 @@ export function LibrarySections({
 				setSel(-1);
 				return;
 			}
-			setRow((r) => Math.min(rows.length - 1, r + 1));
+			moveRow(1);
 		},
-		[rows.length, focusRow],
+		[focusRow, rows, hero],
 		open,
 	);
 	useDirection(
@@ -399,26 +439,33 @@ export function LibrarySections({
 	// ── scrolling ─────────────────────────────────────────────────────────
 
 	// The rows scroll: the view follows the focused row, and a touch drag
-	// pans it.
-	const [scrollTop, setScrollTop] = useState(0);
+	// pans it. A restored position (a full-screen route can have unmounted
+	// this screen) is clamped and followed like any other move.
+	const [scrollTop, setScrollTop] = useState(home.scroll);
 	const maxScroll = Math.max(0, rows.length * ROW_H - ROWS_H);
 
 	useEffect(() => {
 		setScrollTop((s) => Math.max(0, Math.min(s, maxScroll)));
 	}, [maxScroll]);
 
-	// Keep the focused row inside the visible window (the same rule the
-	// library grid applies to its focused tile).
+	// Keep the focused row inside the visible window — the shared
+	// follow-scroll rule (the same maths the library grid applies to its
+	// focused tile: scroll exactly when the target is out of view, never
+	// for its own sake).
 	useEffect(() => {
 		if (focusRow < 0) return;
-		setScrollTop((s) => {
-			const top = focusRow * ROW_H;
-			const bottom = top + ROW_H;
-			if (top < s) return Math.max(0, top);
-			if (bottom > s + ROWS_H) return Math.min(maxScroll, bottom - ROWS_H);
-			return s;
-		});
+		setScrollTop((s) => followScroll(focusRow * ROW_H, ROW_H, ROWS_H, s, maxScroll));
 	}, [focusRow, rows.length, maxScroll]);
+
+	// The position, kept current for the unmount save (the ref outlives the
+	// state: the cleanup below reads it after this screen is gone).
+	navRef.current = { row, sel, heroSel, scroll: scrollTop };
+	useEffect(
+		() => () => {
+			saveFocus('dashboard', navRef.current);
+		},
+		[],
+	);
 
 	useDragScroll(
 		!paused && rows.length > 0,
@@ -612,7 +659,7 @@ export function LibrarySections({
 			</Text>
 
 			{/* ── the section menu (X) ─────────────────────────────────── */}
-			{menuOpen && <SectionMenu items={menuItems} focus={menuFocus ?? 0} />}
+			{menuOpen && <SectionMenu items={menuItems} focus={clamp(menuFocus ?? 0, 0, menuItems.length - 1)} />}
 		</>
 	);
 }

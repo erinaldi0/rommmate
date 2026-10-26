@@ -11,6 +11,7 @@ import { Rect, Text, useDimensions, useParent } from 'react-tela';
 import { colors, fontFamily, fontSize, radius } from '../theme';
 import { truncate } from '../text';
 import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
+import { windowFollow } from '../lib/focus-nav';
 import { Header } from './Header';
 import { HintBar } from './HintBar';
 import { BUILD_ID } from '../version';
@@ -42,29 +43,18 @@ export function DiscPicker({ title, initial, onPick, onClose }: Props) {
 	/** First row visible (the list scrolls when it exceeds the panel). */
 	const [view, setView] = useState(0);
 
-	// Keep the focused row inside the visible window.
-	useDirection(
-		'Up',
-		() => {
-			setFocus((f) => {
-				const nf = Math.max(0, f - 1);
-				setView((v) => Math.min(v, Math.max(0, nf - (MAX_ROWS - 1))));
-				return nf;
-			});
-		},
-		[],
-	);
-	useDirection(
-		'Down',
-		() => {
-			setFocus((f) => {
-				const nf = Math.min(Math.max(0, count - 1), f + 1);
-				setView((v) => Math.min(v, Math.max(0, nf - MAX_ROWS + 1)));
-				return nf;
-			});
-		},
-		[count],
-	);
+	// Keep the focused row inside the visible window — the shared
+	// window-follow rule (move the window exactly when the focus falls
+	// outside it, never for its own sake). One press is one row: the
+	// directions deliberately have no auto-repeat.
+	const moveFocus = (delta: number) => {
+		const next = Math.min(Math.max(0, focus + delta), Math.max(0, count - 1));
+		if (next === focus) return;
+		setFocus(next);
+		setView((v) => windowFollow(next, Math.min(count, MAX_ROWS), v));
+	};
+	useDirection('Up', () => moveFocus(-1), [focus, count]);
+	useDirection('Down', () => moveFocus(1), [focus, count]);
 	useGamepadButton(
 		'A',
 		() => onPick(focus),

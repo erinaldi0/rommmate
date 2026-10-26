@@ -57,6 +57,7 @@ import { installErrorTrap } from '../../src/errors';
 import { patchInsertBefore } from '../../src/react-tela-compat';
 import { coverCacheSize, hasCover, resolveCover } from '../../src/covers';
 import { MOCK_GAMES, MOCK_COLLECTIONS } from '../../src/mock';
+import { downloadQueue } from '../../src/roms/download';
 import { colors } from '../../src/theme';
 import { groupTitles, type RommGame } from '../../src/romm';
 import type { RommTitle } from '../../src/romm';
@@ -528,6 +529,24 @@ function SectionsView() {
 
 /** The downloads queue on its own (empty — it shows the idle state). */
 function DownloadsView() {
+	// `?dq=N` seeds N fake transfers so the queue screen can be exercised
+	// with a list long enough to scroll (dev-only, like the rest of the
+	// harness). The first item's fetch never resolves, so the queue sits
+	// still: one row 'running', the rest 'queued' — deterministic frames.
+	const n = Number(params.get('dq') ?? 0);
+	if (n > 0) {
+		for (let i = 0; i < n; i++) {
+			void downloadQueue.add({
+				id: `fake:${i}`,
+				kind: i === 0 ? 'emulator' : i === 1 ? 'bios' : 'rom',
+				label: i === 0 ? 'RetroArch loader' : i === 1 ? 'bios.zip' : `Fake game #${i - 1}`,
+				dest: `sdmc:/switch/rommate/fake-${i}`,
+				size: 1024 * 1024 * (10 + i),
+				hash: '',
+				fetchPart: () => new Promise(() => {}) as Promise<Response>,
+			});
+		}
+	}
 	return <DownloadsScreen onBack={() => {}} />;
 }
 

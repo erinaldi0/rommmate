@@ -26,14 +26,18 @@ const LIST_X = 72;
  * The Play setup doctor: one row per prerequisite (sync routes, the
  * RetroArch platform, the loader, one core per emulable platform, the
  * BIOS, the SD card), each with a note on what to do when it is not met —
- * plus the two things the user can do about it from the console.
+ * plus the three things the user can do about it from the console.
+ *
+ * The checklist is a report, not controls: the focus walk covers the
+ * actions only (any direction moves between them), so the focus never
+ * lands on a row that cannot act — or on one of the rows the screen
+ * culls once the checklist outgrows the space above the actions.
  */
 export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 	const dims = useDimensions();
 	const [report, setReport] = useState<DoctorReport | null>(null);
 	const [busy, setBusy] = useState(true);
 	const [status, setStatus] = useState('');
-	const [focus, setFocus] = useState(0);
 
 	// The checklist runs once on arrival; a re-press of A re-runs it.
 	useEffect(() => {
@@ -53,8 +57,13 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 
 	const actions = ['Download all missing', 'Open RomM web UI', 'Re-check'];
 	const checklist = report?.rows ?? [];
-	const total = checklist.length + actions.length;
-	const focusClamped = Math.min(focus, total - 1);
+
+	// See the module comment: the walk covers the actions only, and every
+	// axis moves between them (on a single row of pills, a dead direction
+	// would be a trap).
+	const [focus, setFocus] = useState(0);
+	const focusClamped = Math.min(Math.max(0, focus), actions.length - 1);
+	const moveFocus = (delta: number) => setFocus((f) => Math.min(Math.max(0, f + delta), actions.length - 1));
 
 	const fix = () => {
 		setStatus('Working…');
@@ -90,17 +99,18 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 			.finally(() => setBusy(false));
 	};
 
+	/** Run the focused action (the checklist rows are informational). */
 	function activate(i: number) {
-		if (i < checklist.length) return; // checklist rows are informational
-		const which = i - checklist.length;
-		if (which === 0) fix();
-		else if (which === 1) openWeb();
+		if (i === 0) fix();
+		else if (i === 1) openWeb();
 		else recheck();
 	}
 
-	useDirection('Up', () => setFocus((f) => Math.max(0, f - 1)), []);
-	useDirection('Down', () => setFocus((f) => Math.min(total - 1, f + 1)), [total]);
-	useGamepadButton('A', () => activate(focusClamped), [focusClamped, checklist.length, baseUrl]);
+	useDirection('Up', () => moveFocus(-1), [actions.length]);
+	useDirection('Down', () => moveFocus(1), [actions.length]);
+	useDirection('Left', () => moveFocus(-1), [actions.length]);
+	useDirection('Right', () => moveFocus(1), [actions.length]);
+	useGamepadButton('A', () => activate(focusClamped), [focusClamped, baseUrl]);
 	useGamepadButton('B', onBack, [onBack]);
 
 	const actionY = dims.height - 128;
@@ -125,19 +135,8 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 				<>
 					{checklist.slice(0, maxRows).map((row, i) => {
 						const y = LIST_TOP + i * ROW_H;
-						const focused = i === focusClamped;
 						return (
 							<React.Fragment key={row.label}>
-								<Rect
-									x={LIST_X - 12}
-									y={y - 6}
-									width={dims.width - LIST_X * 2 + 24}
-									height={ROW_H}
-									fill={focused ? colors.surfaceRaised : colors.surface}
-									stroke={focused ? colors.accent : colors.border}
-									lineWidth={focused ? 2 : 1}
-									borderRadius={radius.sm}
-								/>
 								<Text
 									x={LIST_X}
 									y={y + 2}
@@ -152,7 +151,7 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 									y={y + 2}
 									fontFamily={fontFamily}
 									fontSize={fontSize.small}
-									fill={focused ? colors.textPrimary : colors.textSecondary}
+									fill={colors.textSecondary}
 									maxWidth={300}
 									overflow="ellipsis"
 								>
@@ -187,8 +186,7 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 			)}
 
 			{actions.map((label, i) => {
-				const which = checklist.length + i;
-				const focused = which === focusClamped;
+				const focused = i === focusClamped;
 				const x = LIST_X + i * (pillW + space.md);
 				return (
 					<React.Fragment key={label}>
@@ -231,7 +229,7 @@ export function SetupDoctor({ onBack, baseUrl, platforms }: Props) {
 				</Text>
 			)}
 
-			<HintBar hints={['A ' + (focusClamped < (report?.rows.length ?? 0) ? 'check' : actions[Math.min(2, focusClamped - (report?.rows.length ?? 0))] ?? 'do'), 'B back']} />
+			<HintBar hints={[`A ${actions[focusClamped].toLowerCase()}`, 'B back']} />
 		</>
 	);
 }

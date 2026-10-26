@@ -793,6 +793,7 @@ export function App() {
 				onBack={closeSection}
 				onOpen={openDetail}
 				paused={route === 'detail' || picker !== null}
+				focusKey={sectionKey(section)}
 				initialPlatform={gridData.platform}
 			/>
 		);
@@ -822,10 +823,14 @@ export function App() {
 			{route === 'detail' && detail !== null && (
 				// The key makes the screen remount per game, so its state
 				// (which artwork is loading) never leaks into the next one.
-				// `paused` hands the controller to the disc picker while it
-				// floats over this screen.
+				// It is namespaced because the disc picker is a sibling keyed
+				// by its title: a game's id and its title's key are the same
+				// number, and two siblings sharing one key is a
+				// reconciliation hazard (React warns about it). `paused` hands
+				// the controller to the disc picker while it floats over this
+				// screen.
 				<GameDetail
-					key={detail.id}
+					key={`game-${detail.id}`}
 					game={detail}
 					disc={detailDisc ?? undefined}
 					onBack={closeDetail}
@@ -839,7 +844,7 @@ export function App() {
 			)}
 			{picker !== null && (
 				<DiscPicker
-					key={picker.key}
+					key={`picker-${picker.key}`}
 					title={picker}
 					initial={Math.min(Math.max(0, discSel[picker.key] ?? picker.mainIndex), Math.max(0, picker.discs.length - 1))}
 					onPick={pickDisc}

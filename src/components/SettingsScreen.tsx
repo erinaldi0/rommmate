@@ -5,6 +5,7 @@ import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { useTextEntry, type Field } from '../hooks/use-text-entry';
 import { InAppKeyboard } from './InAppKeyboard';
 import { BUILD_ID } from '../version';
+import { colors } from '../theme';
 import {
 	AUTH_METHODS,
 	DEFAULT_AUTH_METHOD,
@@ -278,8 +279,8 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 				y={y}
 				width={ROW_W}
 				height={ROW_H}
-				fill={isFocused ? '#232338' : '#171722'}
-				stroke={isFocused ? '#5b8cff' : '#262636'}
+				fill={isFocused ? colors.surfaceRaised : '#171722'}
+				stroke={isFocused ? colors.accent : '#262636'}
 				lineWidth={isFocused ? 3 : 1}
 				borderRadius={10}
 			/>,

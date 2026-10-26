@@ -1,7 +1,8 @@
-import React, { useSyncExternalStore, useState } from 'react';
+import React, { useEffect, useSyncExternalStore, useState } from 'react';
 import { Rect, Text, useDimensions } from 'react-tela';
-import { colors, fontFamily, fontSize, radius, space } from '../theme';
+import { colors, fontFamily, fontSize, radius } from '../theme';
 import { useGamepadButton, useDirection } from '../hooks/use-gamepad';
+import { windowFollow } from '../lib/focus-nav';
 import { Header } from './Header';
 import { HintBar } from './HintBar';
 import { BUILD_ID } from '../version';
@@ -27,6 +28,11 @@ function fmtBytes(bytes: number): string {
 /**
  * The download queue: everything the Play feature pulls from the server
  * (loader, cores, BIOS, roms), one row per transfer with its progress.
+ *
+ * The list scrolls: the queue can hold every transfer of a long install
+ * session, and the focused row is kept inside the visible window (the
+ * same window-follow rule the disc picker uses) — before the window
+ * existed, the focus could walk onto rows the screen never rendered.
  */
 export function DownloadsScreen({ onBack }: Props) {
 	const dims = useDimensions();
@@ -38,22 +44,38 @@ export function DownloadsScreen({ onBack }: Props) {
 		() => downloadQueue.getItems(),
 	);
 	const [focus, setFocus] = useState(0);
+	/** First visible row (the window slides only to keep the focus visible). */
+	const [view, setView] = useState(0);
 	const cx = dims.width / 2;
 	const rowX = cx - ROW_W / 2;
+
+	// How many rows fit between the header and the hint bar.
+	const visibleRows = Math.max(1, Math.floor((dims.height - 90 - ROW_TOP) / (ROW_H + ROW_GAP)));
+
+	// The queue changes under the focus (transfers finish; A dismisses a
+	// row), so every move starts from the clamped, displayed position —
+	// the raw index can never point past the end of the list.
 	const focusClamped = items.length > 0 ? Math.min(focus, items.length - 1) : 0;
 
-	useDirection(
-		'Up',
-		() => setFocus((f) => Math.max(0, f - 1)),
-		[],
-		items.length > 0,
-	);
-	useDirection(
-		'Down',
-		() => setFocus((f) => Math.min(items.length - 1, f + 1)),
-		[items.length],
-		items.length > 0,
-	);
+	/**
+	 * Move the focus by one row, following with the window exactly when
+	 * the target falls outside it. One press is one row: the directions
+	 * deliberately have no auto-repeat.
+	 */
+	const moveFocus = (delta: number) => {
+		const next = Math.min(Math.max(0, focusClamped + delta), Math.max(0, items.length - 1));
+		if (next === focusClamped) return;
+		setFocus(next);
+		setView((v) => windowFollow(next, Math.min(items.length, visibleRows), v));
+	};
+	useDirection('Up', () => moveFocus(-1), [focusClamped, items.length], items.length > 0);
+	useDirection('Down', () => moveFocus(1), [focusClamped, items.length], items.length > 0);
+	// The list can also change without a move (a row dismissed by its
+	// transfer settling, in a future queue semantics): re-run the window
+	// rule so the focused row stays visible however the list moved.
+	useEffect(() => {
+		setView((v) => windowFollow(focusClamped, Math.min(items.length, visibleRows), v));
+	}, [items.length, focusClamped, visibleRows]);
 	useGamepadButton(
 		'A',
 		() => {
@@ -90,6 +112,10 @@ export function DownloadsScreen({ onBack }: Props) {
 		rom: 'game',
 	};
 
+	// Only the window is rendered; the rows outside it exist in the queue
+	// but not on the canvas.
+	const shown = items.slice(view, view + visibleRows);
+
 	return (
 		<>
 			<Rect width={dims.width} height={dims.height} fill={colors.bg} />
@@ -100,10 +126,10 @@ export function DownloadsScreen({ onBack }: Props) {
 					Nothing in the queue — use Install on a game's page.
 				</Text>
 			) : (
-				items.map((item, i) => {
+				shown.map((item, i) => {
+					const idx = view + i;
 					const y = ROW_TOP + i * (ROW_H + ROW_GAP);
-					if (y > dims.height - 90) return null; // keep the last rows off-screen
-					const focused = i === focusClamped;
+					const focused = idx === focusClamped;
 					return (
 						<React.Fragment key={item.id}>
 							<Rect
@@ -170,7 +196,10 @@ export function DownloadsScreen({ onBack }: Props) {
 				})
 			)}
 
-			<HintBar hints={['A dismiss / cancel', 'B back']} />
+			{/* The hints describe the actions that exist: with an empty
+				queue there is nothing for A to dismiss, and the bar says so
+				instead of advertising a dead button. */}
+			<HintBar hints={items.length === 0 ? ['B back'] : ['A dismiss / cancel', 'B back']} />
 		</>
 	);
 }

@@ -181,34 +181,3 @@ export function CoverTile({
 		</>
 	);
 }
-
-/**
- * The focus ring around the focused cover.
- *
- * It is drawn separately from the tile so the library screen can paint it
- * *after* the bands that mask the overflowing rows — otherwise the ring of
- * a half-scrolled tile would be clipped by the mask.
- */
-export function CoverFocusRing({
-	x,
-	y,
-	width,
-	height,
-}: {
-	x: number;
-	y: number;
-	width: number;
-	height: number;
-}) {
-	return (
-		<Rect
-			x={x - 6}
-			y={y - 6}
-			width={width + 12}
-			height={height + 12}
-			stroke={colors.accent}
-			lineWidth={4}
-			borderRadius={radius.xl}
-		/>
-	);
-}

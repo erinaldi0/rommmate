@@ -378,10 +378,16 @@ browser:
 - `?cover=<url>` overrides tile artwork; `?base=<url>&token=…` seeds
   credentials against a real RomM via `proxy.mjs` (CORS; the Switch app is
   unaffected — nx.js's `fetch` has no CORS).
+- `?view=downloads&dq=N` seeds N fake transfers (the first never
+  resolves: one 'running', the rest 'queued') so the queue screen can
+  be exercised with a list long enough to scroll.
 - The trace is mirrored into the document title; `bands.mjs`/`probe.mjs`/
   `ascii.mjs` read screenshots from the terminal; `shot.mjs` takes real-time
-  offsets over CDP; `click.mjs` drives the touch path; `?fkbd=1|2` simulates
-  the two silent system-keyboard failures.
+  offsets over CDP; `click.mjs` drives the touch path; `navtest.mjs` drives
+  a `?sim=` sequence and reports **where the focus ended up** (the
+  accent-stroked entities in the render tree, plus the trace) — the
+  navigation-audit tool; `?fkbd=1|2` simulates the two silent
+  system-keyboard failures.
 
 v13 extends the mock (`src/mock.ts` + the preview's fetch stub) with every new
 endpoint: content streams (incl. `Accept-Ranges`), the batch zip, firmware,
@@ -431,6 +437,91 @@ The long-form notes lived here through v0.12; the git history keeps the detail.
 | v15 | Dashboard redesigned to the new mockup: hero with inline install/play + sync saves + install panel + disc pager, platforms as a chip strip, X section menu, and the screen split into `dashboard/` subcomponents (below) |
 | **v16** | **The home screen restyled onto the shared design system**: ambient background, system-built hero + install card, both cover rows through the one `CoverCard`, contextual hint bar, build stamp in the footer — and the row headers' focus un-stranded (below) |
 | **v17** | **The game detail screen rebuilt on the design system**: a three-column game page (box art + screenshot / identity + description + actions / installation card + facts + disc + save-sync), the action focus walk repaired (the secondaries were unreachable), and two shared bugs fixed on the way — the `Button` detail's negative `maxWidth` and the disc picker double-owning the controller over this screen (below) |
+| **v18** | **The controller-navigation audit**: one shared focus-navigation model (`lib/focus-nav.ts`) + focus memory across unmounts (`lib/focus-memory.ts`); the dashboard's swallowed Left/Right after a row change fixed (raw vs displayed focus can no longer disagree); the downloads queue scrolls (the focus used to walk onto rows it never rendered); the doctor's checklist de-focusabled (its "A check" hint advertised a dead button); the grid drops its second focus ring while the filter bar owns the focus; the settings screen joins the theme accent; hint bars tell the truth everywhere (below) |
+
+## v18 — The controller-navigation audit
+
+Every screen kept its own focus state (that stayed — it is the app's
+convention), but the *rules* of that state were five hand-rolled copies
+with five different bugs. The audit walked every path a pad can take —
+dashboard rows/hero/section menu, the section grid and its filter bar,
+the detail screen, the disc picker, the downloads queue, the doctor,
+the settings rows, the built-in keyboard — first by reading, then by
+driving the real App through the preview harness with a new tool:
+
+- **`lib/focus-nav.ts`** — the one focus-navigation model, pure helpers:
+  `clamp`/`clampSel` (an index lives inside its range, and a row change
+  normalises the column position into the target row), `followScroll`
+  (the view scrolls exactly when the focused thing is out of view,
+  never for its own sake) and `windowFollow` (the same rule for the
+  windowed lists that re-emit rows instead of scrolling). The
+  dashboard, the grid, the picker and the queue now move by the same
+  maths.
+- **`lib/focus-memory.ts`** — where the player was, remembered across
+  an unmount. The detail screen and the picker never unmount the
+  library (they paint over it), but the downloads route replaces the
+  whole screen, and the remount used to reset the position to the top:
+  back from downloads, a long library started over at tile 0. The
+  dashboard and each section grid save their position on unmount and
+  restore it on mount — re-clamped against whatever list is actually on
+  screen, so a library that changed while away cannot strand the
+  focus. A section's search and chips still start clean (that key
+  remount is theirs); only the position comes back.
+- **The dashboard's swallowed press** — the raw `sel` survived a row
+  change untouched, so moving Down from a 9-cover row onto a 3-cover
+  one left the raw index at 8 while the *display* clamped it to 2:
+  the first Left/Right afterwards was spent clamping the raw index
+  back into range instead of moving. One swallowed press per row
+  change, both directions. `moveRow` normalises the column into the
+  target row, so the raw focus and the displayed focus never disagree.
+- **The downloads queue scrolls** — rows past `height − 90` were simply
+  not emitted, but nothing stopped the focus from walking onto them:
+  after ~8 items the ring highlighted a row that did not exist. The
+  queue now keeps a window (`windowFollow`, like the disc picker),
+  moves always start from the clamped displayed position (A dismisses
+  rows and transfers finish underneath), and the hint bar drops the
+  dead "A dismiss" when the queue is empty.
+- **The doctor's checklist de-focusabled** — its rows are a report, not
+  controls: A on them did nothing while the hint advertised "A check",
+  and the lower rows are culled once the list outgrows the space above
+  the actions, so the focus could land on rows the screen never drew.
+  The walk now covers the three actions (every axis moves between
+  them — a dead direction on a single row of pills is a trap), and the
+  hint names the action A will actually run.
+- **One focus indicator at a time** — while the grid's filter bar owned
+  the focus, the grid kept its ring on the last tile: two accent
+  indicators on screen, and A acted on the one without the ring. The
+  ring and the tile's label emphasis are gated on the zone (the same
+  rule the dashboard applies when its section menu opens). The grid's
+  ring also became the one shared `FocusRing` with its glow — the same
+  ring a dashboard cover wears — and the settings screen's focused
+  rows joined the theme accent (they were a hand-rolled `#5b8cff`).
+- **Key hygiene** — `GameDetail` and `DiscPicker` are App siblings
+  keyed `detail.id` / `picker.key`, and a game's id *is* its title's
+  key: opening the picker over a detail screen produced two children
+  with one key (React warned). Both keys are namespaced now.
+
+Verified with the new `tools/preview/navtest.mjs` (drives a `?sim=`
+sequence, then reports the focus from the entity tree — the
+accent-stroked shapes *are* the focus map — plus the input trace; no
+pixel-squinting): the swallowed-press sequences on two different rows,
+the row/header/hero/section-menu walks, the grid's zone round trip and
+column-preserving vertical moves, the search-keyboard handover, the
+downloads window at 14 items and the dismiss clamp, the doctor's
+action walk + hints, the settings method cycle (rows grow under the
+focus), and the full-App round trips — demo → tile → detail → B
+(focus kept), → downloads → B (position restored from memory),
+section grid → detail → downloads → B (grid position restored), and
+detail → Discs → picker → B (the detail keeps its focus) — plus `tsc`
+and the esbuild bundles.
+
+Two loop invariants are now written down in `gamepad/loop.ts` (they
+were true before and still are): one owner per button — edges are
+tracked in shared per-button state, so a press held across a screen
+change sees "already down" on the new screen and cannot activate
+twice; and repeat timing keyed per input, so re-registration resumes
+the cadence (the keyboard's held-arrow repeat) instead of restarting
+it.
 
 ## v17 — The game detail screen on the design system
 

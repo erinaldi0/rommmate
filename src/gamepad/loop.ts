@@ -11,6 +11,21 @@
  * The loop is a process-wide singleton: one rAF chain reads the
  * controller, and the React hooks in `hooks/use-gamepad` register
  * callbacks with it (see there for the register/unregister side).
+ *
+ * Two invariants worth knowing before touching this file:
+ *
+ *  - One owner per button. The pressed/released *edges* are tracked in
+ *    one shared per-button state, not per callback: while a screen and
+ *    its overlay both mount, exactly one of them may register a given
+ *    button (the screens gate registration with `focused` / `paused`,
+ *    and React runs the old cleanups before the new effects, so the
+ *    handover is sequential). This is what makes a button held across a
+ *    screen change safe: the newly registered screen sees "already
+ *    down", not a fresh edge, so the held press cannot activate twice.
+ *
+ *  - Repeat timing is keyed per input (`btn:A`, `stk:Up`), never per
+ *    callback: re-registering a callback (React does, on every relevant
+ *    re-render) resumes the cadence instead of restarting it.
  */
 import { Button } from '@nx.js/constants';
 import { getVirtualKeyboard, type VirtualKeyboardLike } from '../vk';

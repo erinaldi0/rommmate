@@ -13,8 +13,11 @@ import { useDragScroll } from '../hooks/use-drag-scroll';
 import { getVirtualKeyboard } from '../vk';
 import { prefetchCovers, type CoverRequest } from '../covers';
 import { BUILD_ID } from '../version';
-import { colors } from '../theme';
-import { CoverFocusRing, CoverTile, TITLE_BLOCK_H } from './CoverTile';
+import { colors, radius } from '../theme';
+import { followScroll } from '../lib/focus-nav';
+import { saveFocus, takeFocus } from '../lib/focus-memory';
+import { CoverTile, TITLE_BLOCK_H } from './CoverTile';
+import { FocusRing } from './ui';
 import { FilterBar } from './FilterBar';
 import {
 	SEARCH_KEY,
@@ -64,6 +67,13 @@ interface Props {
 	onOpen: (game: RommGame) => void;
 	/** True while another screen owns the input (the detail overlay). */
 	paused?: boolean;
+	/**
+	 * The key this screen's position is remembered under (App passes the
+	 * section key, the same one that remounts the screen — see
+	 * `lib/focus-memory`). Omitted, the screen starts fresh (the preview
+	 * harness, which drives deterministic states).
+	 */
+	focusKey?: string;
 	/** Initial scroll offset (preview harness only; defaults to the top). */
 	initialScroll?: number;
 	/** Initially focused tile index (preview harness only). */
@@ -90,6 +100,7 @@ export function LibraryGrid({
 	onBack,
 	onOpen,
 	paused = false,
+	focusKey,
 	initialScroll = 0,
 	initialFocus = 0,
 	initialZone = 'grid',
@@ -98,12 +109,32 @@ export function LibraryGrid({
 }: Props) {
 	const dims = useDimensions();
 
-	const [zone, setZone] = useState<Zone>(initialZone);
-	const [focus, setFocus] = useState(initialFocus);
+	// Where the player left this section (see `lib/focus-memory`): a
+	// full-screen route (downloads) can unmount the screen, and the
+	// remount used to reset it to the top tile. The section's search and
+	// chips still start clean — the key remount belongs to them — only
+	// the position (focus, zone, scroll) comes back, and every index is
+	// re-clamped against the list that is actually on screen now.
+	const remembered =
+		focusKey !== undefined
+			? takeFocus(focusKey, { focus: initialFocus, zone: initialZone, scroll: initialScroll })
+			: null;
+
+	const [zone, setZone] = useState<Zone>(remembered === null ? initialZone : remembered.zone === 'filter' ? 'filter' : 'grid');
+	const [focus, setFocus] = useState(remembered === null ? initialFocus : remembered.focus);
 	const [chip, setChip] = useState(0);
 	const [platform, setPlatform] = useState(initialPlatform);
 	const [query, setQuery] = useState(initialQuery);
-	const [scrollTop, setScrollTop] = useState(initialScroll);
+	const [scrollTop, setScrollTop] = useState(remembered === null ? initialScroll : remembered.scroll);
+	/** The latest position, for the unmount save (the ref outlives the state). */
+	const navRef = useRef({ focus, zone, scroll: scrollTop });
+	navRef.current = { focus, zone, scroll: scrollTop };
+	useEffect(
+		() => () => {
+			if (focusKey !== undefined) saveFocus(focusKey, navRef.current);
+		},
+		[focusKey],
+	);
 
 	// ── filtering ──────────────────────────────────────────────────────────
 	// The rules (what the search matches, how the chips count, which chip
@@ -164,16 +195,14 @@ export function LibraryGrid({
 		prefetchCovers(requests);
 	}, [scrollTop, rows, visible, focus, discSelections]);
 
-	// Keep the focused tile inside the visible window.
+	// Keep the focused tile inside the visible window — the shared
+	// follow-scroll rule (the same maths the dashboard applies to its
+	// focused row: scroll exactly when the target is out of view).
 	useEffect(() => {
-		setScrollTop((current) => {
-			const rowTop = Math.floor(focus / COLS) * TILE_H;
-			const rowBottom = rowTop + TILE_H;
-			if (rowTop < current) return rowTop;
-			if (rowBottom > current + VIEW_H) return rowBottom - VIEW_H;
-			return current;
-		});
-	}, [focus, visible.length]);
+		setScrollTop((current) =>
+			followScroll(Math.floor(focus / COLS) * TILE_H, TILE_H, VIEW_H, current, maxScroll),
+		);
+	}, [focus, visible.length, maxScroll]);
 
 	// The filter can shrink the list under the focused tile.
 	useEffect(() => {
@@ -395,7 +424,7 @@ export function LibraryGrid({
 				y={y}
 				width={COVER_W}
 				height={COVER_H}
-				focused={i === focus}
+				focused={i === focus && gridFocused}
 				nameOverride={t.name}
 				discIndex={multi ? discIndex : undefined}
 				discCount={multi ? t.discs.length : undefined}
@@ -403,17 +432,25 @@ export function LibraryGrid({
 		);
 	});
 
-	// The focus ring is drawn after the masking bands, so a half-scrolled
-	// tile keeps its full outline.
+	/*
+	 * The focus ring is drawn after the masking bands, so a half-scrolled
+	 * tile keeps its full outline. It is the one shared `FocusRing` (with
+	 * its glow — the screens gate the glow to the single focused target),
+	 * the same ring a dashboard cover wears, so focus reads identically on
+	 * both screens.
+	 *
+	 * It is also gated on the zone: while the filter bar owns the focus,
+	 * the grid does not keep a second ring on the tile A would *not*
+	 * act on — one focus indicator on screen at a time (the same rule
+	 * the dashboard applies when its section menu opens).
+	 */
 	const focusTile = visible[focus];
 	let focusRing: React.ReactNode = null;
-	if (focusTile !== undefined) {
+	if (focusTile !== undefined && gridFocused) {
 		const row = Math.floor(focus / COLS);
 		const x = gridX + (focus % COLS) * (COVER_W + GAP_X);
 		const y = VIEW_Y + row * TILE_H - scrollTop;
-		focusRing = (
-			<CoverFocusRing x={x} y={y} width={COVER_W} height={COVER_H} />
-		);
+		focusRing = <FocusRing x={x} y={y} width={COVER_W} height={COVER_H} radius={radius.md} glow />;
 	}
 
 	const hints =
