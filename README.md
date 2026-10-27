@@ -25,6 +25,16 @@ and **react-tela** (React → canvas UI). No devkitPro or C toolchain needed.
 - Wi-Fi or Ethernet on the Switch (for the first boot — it downloads the
   shared nx.js runtime)
 
+### Application-mode crashes (NSP from HOME Menu)
+
+If RomMmate crashes on startup when installed as an NSP (application mode)
+but works from hbmenu (applet mode / NRO), the nx.js runtime's full V8 JIT
+and GPU canvas in application mode may be incompatible with your console or
+firmware. The app now ships `romfs/nxjs.ini` (generated at build time)
+which disables JIT, caps the heap at 512 MB, and uses CPU raster — matching
+the stable applet-mode settings. Reinstall the latest NSP from
+[releases](https://github.com/erinaldi0/rommmate/releases) to get it.
+
 ## Build
 
 ```bash
