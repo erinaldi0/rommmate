@@ -134,360 +134,368 @@ export function App() {
 	}, [cfg.token, cfg.baseUrl]);
 
 	const connect = useCallback(async (config: Config) => {
-		// Each connection attempt gets a generation number: a late result
-		// (or a walk the user abandoned) must never write state the user
-		// has already left.
-		runGen.current += 1;
-		const gen = runGen.current;
-		const controller = new AbortController();
-		aborter.current = controller;
-
-		setBusy(true);
-		setProgress({ loaded: 0, total: null });
-		setStatus('Connecting…');
-		// A new library replaces whatever the screen is looking at.
-		setSection(null);
-		setCollectionGames([]);
-		setPicker(null);
-
-		// The config as the token flows are allowed to update it: a fresh
-		// access token, a rotated refresh token, an exchanged pairing code.
-		// Every update is persisted and pushed into the app state (which
-		// also hands the new token to the cover fetcher).
-		let cur = config;
-		const method = cur.authMethod ?? DEFAULT_AUTH_METHOD;
-		// An empty Base URL would make every request URL *relative*, which
-		// the runtime resolves against the app's own `romfs:` base — the
-		// user would see a baffling protocol error instead of this.
-		if (cur.baseUrl.trim() === '') {
-			setBusy(false);
-			setStatus('Connection failed: Base URL is required');
-			log('connect', 'refused: empty Base URL');
-			return;
-		}
-
-		// ── the offline library first ─────────────────────────────────
-		// The last completed walk is cached on the SD card keyed to this
-		// instance's base URL. Show it *before* anything talks to the
-		// network: with the server unreachable the app still has a
-		// library to browse, installed games to play and local saves.
-		// Once the cache is painted we drop `busy` so the library is
-		// visible; the network refresh runs over it in the background.
-		log('mem', `connect ${memSnapshot()}`);
-		let fromCache = false;
-		let cachedGames: RommGame[] | null = null;
 		try {
-			const cached = await readLibraryCache(normalizeBaseUrl(cur.baseUrl.trim()));
-			if (cached !== null) {
-				const visible = cached.filter((g) => !isHiddenPlatform(g.platform));
-				fromCache = true;
-				cachedGames = cached;
-				log('library', `cache: ${visible.length} games (${cached.length} total)`);
-				log('mem', `cache-loaded ${memSnapshot()}`);
-				setGames(visible);
-				setRoute('library');
+			// Each connection attempt gets a generation number: a late result
+			// (or a walk the user abandoned) must never write state the user
+			// has already left.
+			runGen.current += 1;
+			const gen = runGen.current;
+			const controller = new AbortController();
+			aborter.current = controller;
+
+			setBusy(true);
+			setProgress({ loaded: 0, total: null });
+			setStatus('Connecting…');
+			// A new library replaces whatever the screen is looking at.
+			setSection(null);
+			setCollectionGames([]);
+			setPicker(null);
+
+			// The config as the token flows are allowed to update it: a fresh
+			// access token, a rotated refresh token, an exchanged pairing code.
+			// Every update is persisted and pushed into the app state (which
+			// also hands the new token to the cover fetcher).
+			let cur = config;
+			const method = cur.authMethod ?? DEFAULT_AUTH_METHOD;
+			// An empty Base URL would make every request URL *relative*, which
+			// the runtime resolves against the app's own `romfs:` base — the
+			// user would see a baffling protocol error instead of this.
+			if (cur.baseUrl.trim() === '') {
 				setBusy(false);
-				setStatus(`Loaded ${visible.length} games — updating…`);
-			}
-		} catch {
-			/* the cache is a nicety, never a gate */
-		}
-
-		// With no active connection the OS resolver rejects even a numeric
-		// host outright ("Address family for hostname not supported") —
-		// check nifm before trying. But a server being asked over a dead
-		// link is only an update skip, not a blocker: with the cached
-		// library on screen we simply stay offline.
-		const net = networkStatus();
-		if (net.problem !== null) {
-			setBusy(false);
-			if (fromCache) {
-				log('connect', `offline: ${net.problem} — cached library shown`);
-				setStatus('Offline — showing the saved library');
+				setStatus('Connection failed: Base URL is required');
+				log('connect', 'refused: empty Base URL');
 				return;
 			}
-			setStatus(`Connection failed: ${net.problem}`);
-			log('connect', `refused: ${net.problem}`);
-			return;
-		}
-		log('connect', `method=${method} base=${cur.baseUrl.trim()} ip=${net.ip ?? 'n/a'}`);
-		const apply = (patch: Partial<Config>) => {
-			cur = { ...cur, ...patch };
-			saveConfig(cur);
-			setCfg(cur);
-		};
 
-		// --- Token + client --------------------------------------------
-		// Token acquisition (password grant, refresh fallback, pairing
-		// exchange) and the client's 401 recovery live in session.ts;
-		// the result is the same authenticated client as before.
-		const session: SessionContext = {
-			signal: controller.signal,
-			isStale: () => gen !== runGen.current,
-			applyConfig: apply,
-			setStatus,
-		};
-
-		const ensured = await ensureToken(cur, session);
-		if (gen !== runGen.current) return;
-		if (!ensured.ok) {
-			setBusy(false);
-			setStatus(`Connection failed: ${friendlyNetworkError(ensured.error)}`);
-			return;
-		}
-
-		const client = buildClient(() => cur, session);
-		clientRef.current = client;
-		// (The offline cache was already loaded up top: `fromCache` tells
-		// whether the walk refreshes over a shown library.)
-
-		const authErr = await client.authenticate(controller.signal);
-		if (gen !== runGen.current) return;
-		if (authErr !== null) {
-			log('error', `probe: ${authErr}`);
-			setBusy(false);
-			if (fromCache) {
-				// The saved library is on screen and its covers are on the
-				// SD card: stay there rather than bounce to settings.
-				setStatus('Cannot reach RomM — showing saved library');
-				return;
+			// ── the offline library first ─────────────────────────────────
+			// The last completed walk is cached on the SD card keyed to this
+			// instance's base URL. Show it *before* anything talks to the
+			// network: with the server unreachable the app still has a
+			// library to browse, installed games to play and local saves.
+			// Once the cache is painted we drop `busy` so the library is
+			// visible; the network refresh runs over it in the background.
+			log('mem', `connect ${memSnapshot()}`);
+			let fromCache = false;
+			let cachedGames: RommGame[] | null = null;
+			try {
+				const cached = await readLibraryCache(normalizeBaseUrl(cur.baseUrl.trim()));
+				if (cached !== null) {
+					const visible = cached.filter((g) => !isHiddenPlatform(g.platform));
+					fromCache = true;
+					cachedGames = cached;
+					log('library', `cache: ${visible.length} games (${cached.length} total)`);
+					log('mem', `cache-loaded ${memSnapshot()}`);
+					setGames(visible);
+					setRoute('library');
+					setBusy(false);
+					setStatus(`Loaded ${visible.length} games — updating…`);
+				}
+			} catch {
+				/* the cache is a nicety, never a gate */
 			}
-			setFavGames([]);
-			setCollections([]);
-			setPlatforms([]);
-			setStatus(controller.signal.aborted ? 'Connection cancelled' : `Connection failed: ${friendlyNetworkError(authErr)}`);
-			return;
-		}
-		log('auth', 'probe ok');
 
-		// Favourites and collections never gate the library: they run
-		// alongside the main walk and simply fill their dashboard rows when
-		// they land. Either failing just leaves its row out.
-		void client
-			.getGames(
-				(batch) => {
-					if (gen !== runGen.current) return;
-					const visible = batch.filter((g) => !isHiddenPlatform(g.platform));
-					if (visible.length > 0) setFavGames((prev) => [...prev, ...visible]);
-				},
-				() => {},
-				controller.signal,
-				{ favoriteOnly: true },
-			)
-			.then(({ games: fs, error }) => {
-				if (gen !== runGen.current) return;
-				if (error !== null) {
-					log('error', `favourites: ${error}`);
-					setFavGames([]);
+			// With no active connection the OS resolver rejects even a numeric
+			// host outright ("Address family for hostname not supported") —
+			// check nifm before trying. But a server being asked over a dead
+			// link is only an update skip, not a blocker: with the cached
+			// library on screen we simply stay offline.
+			const net = networkStatus();
+			if (net.problem !== null) {
+				setBusy(false);
+				if (fromCache) {
+					log('connect', `offline: ${net.problem} — cached library shown`);
+					setStatus('Offline — showing the saved library');
 					return;
 				}
-				setFavGames(fs.filter((g) => !isHiddenPlatform(g.platform)));
-				log('mem', `fav-loaded ${memSnapshot()}`);
+				setStatus(`Connection failed: ${net.problem}`);
+				log('connect', `refused: ${net.problem}`);
+				return;
+			}
+			log('connect', `method=${method} base=${cur.baseUrl.trim()} ip=${net.ip ?? 'n/a'}`);
+			const apply = (patch: Partial<Config>) => {
+				cur = { ...cur, ...patch };
+				saveConfig(cur);
+				setCfg(cur);
+			};
+
+			// --- Token + client --------------------------------------------
+			// Token acquisition (password grant, refresh fallback, pairing
+			// exchange) and the client's 401 recovery live in session.ts;
+			// the result is the same authenticated client as before.
+			const session: SessionContext = {
+				signal: controller.signal,
+				isStale: () => gen !== runGen.current,
+				applyConfig: apply,
+				setStatus,
+			};
+
+			const ensured = await ensureToken(cur, session);
+			if (gen !== runGen.current) return;
+			if (!ensured.ok) {
+				setBusy(false);
+				setStatus(`Connection failed: ${friendlyNetworkError(ensured.error)}`);
+				return;
+			}
+
+			const client = buildClient(() => cur, session);
+			clientRef.current = client;
+			// (The offline cache was already loaded up top: `fromCache` tells
+			// whether the walk refreshes over a shown library.)
+
+			const authErr = await client.authenticate(controller.signal);
+			if (gen !== runGen.current) return;
+			if (authErr !== null) {
+				log('error', `probe: ${authErr}`);
+				setBusy(false);
+				if (fromCache) {
+					// The saved library is on screen and its covers are on the
+					// SD card: stay there rather than bounce to settings.
+					setStatus('Cannot reach RomM — showing saved library');
+					return;
+				}
+				setFavGames([]);
+				setCollections([]);
+				setPlatforms([]);
+				setStatus(controller.signal.aborted ? 'Connection cancelled' : `Connection failed: ${friendlyNetworkError(authErr)}`);
+				return;
+			}
+			log('auth', 'probe ok');
+
+			// Favourites and collections never gate the library: they run
+			// alongside the main walk and simply fill their dashboard rows when
+			// they land. Either failing just leaves its row out.
+			void client
+				.getGames(
+					(batch) => {
+						if (gen !== runGen.current) return;
+						const visible = batch.filter((g) => !isHiddenPlatform(g.platform));
+						if (visible.length > 0) setFavGames((prev) => [...prev, ...visible]);
+					},
+					() => {},
+					controller.signal,
+					{ favoriteOnly: true },
+				)
+				.then(({ games: fs, error }) => {
+					if (gen !== runGen.current) return;
+					if (error !== null) {
+						log('error', `favourites: ${error}`);
+						setFavGames([]);
+						return;
+					}
+					setFavGames(fs.filter((g) => !isHiddenPlatform(g.platform)));
+					log('mem', `fav-loaded ${memSnapshot()}`);
+				});
+
+			void client.getCollections(controller.signal).then(({ collections: cs, error }) => {
+				if (gen !== runGen.current) return;
+				if (error !== null) {
+					log('error', `collections: ${error}`);
+					setCollections([]);
+					return;
+				}
+				setCollections(cs);
 			});
 
-		void client.getCollections(controller.signal).then(({ collections: cs, error }) => {
+			// Platforms come first now: the incremental sync's plan is built
+			// from the per-platform rom counts of this one small request (and
+			// the same list still feeds the dashboard's platforms row, so it
+			// is never wasted).
+			const ps = await client.getPlatforms(controller.signal);
 			if (gen !== runGen.current) return;
-			if (error !== null) {
-				log('error', `collections: ${error}`);
-				setCollections([]);
-				return;
+			if (ps.error !== null) {
+				log('error', `platforms: ${ps.error}`);
+				setPlatforms([]);
+			} else {
+				setPlatforms(ps.platforms.filter((p) => !isHiddenPlatform(p.name)));
 			}
-			setCollections(cs);
-		});
 
-		// Platforms come first now: the incremental sync's plan is built
-		// from the per-platform rom counts of this one small request (and
-		// the same list still feeds the dashboard's platforms row, so it
-		// is never wasted).
-		const ps = await client.getPlatforms(controller.signal);
-		if (gen !== runGen.current) return;
-		if (ps.error !== null) {
-			log('error', `platforms: ${ps.error}`);
-			setPlatforms([]);
-		} else {
-			setPlatforms(ps.platforms.filter((p) => !isHiddenPlatform(p.name)));
-		}
+			/**
+			 * The shared finish: canonical list replace, cache + sync-state
+			 * persist, and the Play service bind. Every sync outcome lands
+			 * here — full walk, delta merge, or "nothing changed" (`persist`
+			 * false skips the cache rewrite when the data is byte-identical
+			 * to what is already on the card).
+			 */
+			const finish = (all: RommGame[], label: string, capped: boolean, persist = true): void => {
+				const visible = all.filter((g) => !isHiddenPlatform(g.platform));
+				log('library', `${label} — ${visible.length} games${capped ? ' (capped)' : ''}`);
+				setGames(visible);
+				setStatus(
+					visible.length > 0
+						? `Loaded ${visible.length} games${capped ? ' (capped)' : ''}`
+						: 'Library is empty',
+				);
+				setRoute('library');
+				if (ps.error === null) {
+					void writeSyncState(client.base, countSnapshot(ps.platforms), Date.now()).catch(
+						(err) => log('error', `sync state write: ${String(err)}`),
+					);
+				}
+				if (persist) {
+					void writeLibraryCache(client.base, all).then(
+						() => log('library', `cache saved — ${all.length} games`),
+						(err) => log('error', `cache write: ${String(err)}`),
+					);
+				}
+				void play.bind(client, { ...cur }).then(() => void play.bootSync());
+			};
 
-		/**
-		 * The shared finish: canonical list replace, cache + sync-state
-		 * persist, and the Play service bind. Every sync outcome lands
-		 * here — full walk, delta merge, or "nothing changed" (`persist`
-		 * false skips the cache rewrite when the data is byte-identical
-		 * to what is already on the card).
-		 */
-		const finish = (all: RommGame[], label: string, capped: boolean, persist = true): void => {
-			const visible = all.filter((g) => !isHiddenPlatform(g.platform));
-			log('library', `${label} — ${visible.length} games${capped ? ' (capped)' : ''}`);
-			setGames(visible);
-			setStatus(
-				visible.length > 0
-					? `Loaded ${visible.length} games${capped ? ' (capped)' : ''}`
-					: 'Library is empty',
-			);
-			setRoute('library');
-			if (ps.error === null) {
-				void writeSyncState(client.base, countSnapshot(ps.platforms), Date.now()).catch(
-					(err) => log('error', `sync state write: ${String(err)}`),
-				);
-			}
-			if (persist) {
-				void writeLibraryCache(client.base, all).then(
-					() => log('library', `cache saved — ${all.length} games`),
-					(err) => log('error', `cache write: ${String(err)}`),
-				);
-			}
-			void play.bind(client, { ...cur }).then(() => void play.bootSync());
-		};
-
-		// ── plan the sync ─────────────────────────────────────────────
-		// Delta path: the cached list stays canonical except where the
-		// server disagrees (platform counts changed, platform vanished,
-		// or a rom's `updated_at` moved past the last walk). `planGames`
-		// non-null means the full walk below is skipped.
-		let planGames: RommGame[] | null = null;
-		if (fromCache && cachedGames !== null && ps.error === null) {
-			const state = await readSyncState(client.base);
-			if (gen !== runGen.current) return;
-			const plan = planSync(state, ps.platforms);
-			log(
-				'library',
-				`sync: ${plan.changedPids.length} changed, ${plan.droppedPids.length} gone` +
-					(plan.afterIso !== '' ? `, sweep after ${plan.afterIso}` : ', no sweep'),
-			);
-			let merged = cachedGames.filter(
-				(g) => !plan.changedPids.includes(g.platformId) && !plan.droppedPids.includes(g.platformId),
-			);
-			let failed = false;
-			let changed = plan.changedPids.length > 0 || plan.droppedPids.length > 0;
-			if (plan.afterIso !== '') {
-				const sweep = await client.getGamesStream(
-					() => {},
-					undefined,
-					controller.signal,
-					{ updatedAfter: plan.afterIso },
-				);
+			// ── plan the sync ─────────────────────────────────────────────
+			// Delta path: the cached list stays canonical except where the
+			// server disagrees (platform counts changed, platform vanished,
+			// or a rom's `updated_at` moved past the last walk). `planGames`
+			// non-null means the full walk below is skipped.
+			let planGames: RommGame[] | null = null;
+			if (fromCache && cachedGames !== null && ps.error === null) {
+				const state = await readSyncState(client.base);
 				if (gen !== runGen.current) return;
-				if (sweep.error !== null) {
-					log('error', `sync sweep: ${sweep.error}`);
-					failed = true;
-				} else if (sweep.games.length > 0) {
-					// The 60 s backstop re-returns the same roms on every
-					// boot — only roms whose parsed content genuinely
-					// differs (or are new) count as a change, so an
-					// unchanged library skips the cache rewrite.
-					const prevById = new Map<number, RommGame>();
-					for (const g of cachedGames) if (g.id > 0) prevById.set(g.id, g);
-					let real = 0;
-					for (const up of sweep.games) {
-						const prev = up.id > 0 ? prevById.get(up.id) : undefined;
-						if (prev === undefined || JSON.stringify(prev) !== JSON.stringify(up)) {
-							real += 1;
+				const plan = planSync(state, ps.platforms);
+				log(
+					'library',
+					`sync: ${plan.changedPids.length} changed, ${plan.droppedPids.length} gone` +
+						(plan.afterIso !== '' ? `, sweep after ${plan.afterIso}` : ', no sweep'),
+				);
+				let merged = cachedGames.filter(
+					(g) => !plan.changedPids.includes(g.platformId) && !plan.droppedPids.includes(g.platformId),
+				);
+				let failed = false;
+				let changed = plan.changedPids.length > 0 || plan.droppedPids.length > 0;
+				if (plan.afterIso !== '') {
+					const sweep = await client.getGamesStream(
+						() => {},
+						undefined,
+						controller.signal,
+						{ updatedAfter: plan.afterIso },
+					);
+					if (gen !== runGen.current) return;
+					if (sweep.error !== null) {
+						log('error', `sync sweep: ${sweep.error}`);
+						failed = true;
+					} else if (sweep.games.length > 0) {
+						// The 60 s backstop re-returns the same roms on every
+						// boot — only roms whose parsed content genuinely
+						// differs (or are new) count as a change, so an
+						// unchanged library skips the cache rewrite.
+						const prevById = new Map<number, RommGame>();
+						for (const g of cachedGames) if (g.id > 0) prevById.set(g.id, g);
+						let real = 0;
+						for (const up of sweep.games) {
+							const prev = up.id > 0 ? prevById.get(up.id) : undefined;
+							if (prev === undefined || JSON.stringify(prev) !== JSON.stringify(up)) {
+								real += 1;
+							}
 						}
+						merged = mergeSynced(merged, sweep.games);
+						changed = changed || real > 0;
+						log('library', `sweep: ${sweep.games.length} touched, ${real} changed`);
 					}
-					merged = mergeSynced(merged, sweep.games);
-					changed = changed || real > 0;
-					log('library', `sweep: ${sweep.games.length} touched, ${real} changed`);
 				}
-			}
-			for (const pid of plan.changedPids) {
-				if (failed) break;
-				const walk = await client.getGamesStream(
-					() => {},
-					undefined,
-					controller.signal,
-					{ platformId: pid },
-				);
-				if (gen !== runGen.current) return;
-				if (walk.error !== null) {
-					log('error', `platform walk ${pid}: ${walk.error}`);
-					failed = true;
-					break;
+				for (const pid of plan.changedPids) {
+					if (failed) break;
+					const walk = await client.getGamesStream(
+						() => {},
+						undefined,
+						controller.signal,
+						{ platformId: pid },
+					);
+					if (gen !== runGen.current) return;
+					if (walk.error !== null) {
+						log('error', `platform walk ${pid}: ${walk.error}`);
+						failed = true;
+						break;
+					}
+					log('library', `platform ${pid}: ${walk.games.length} roms`);
+					merged = merged.concat(walk.games);
 				}
-				log('library', `platform ${pid}: ${walk.games.length} roms`);
-				merged = merged.concat(walk.games);
-			}
 
-			if (controller.signal.aborted) {
-				setStatus('Connection cancelled');
-				setActivity('library', null);
-				return;
-			}
-			if (!failed) {
+				if (controller.signal.aborted) {
+					setStatus('Connection cancelled');
+					setActivity('library', null);
+					return;
+				}
+				if (!failed) {
+					setBusy(false);
+					setProgress({ loaded: 0, total: null });
+					setActivity('library', null);
+					finish(merged, changed ? 'sync' : 'up-to-date', false, changed);
+					return;
+				}
+				// The delta fetch failed: the saved library stays on screen
+				// (`setGames` already holds it), but the sync state is left
+				// stale so the next boot re-checks everything.
 				setBusy(false);
 				setProgress({ loaded: 0, total: null });
 				setActivity('library', null);
-				finish(merged, changed ? 'sync' : 'up-to-date', false, changed);
+				setStatus('Saved library shown — update failed');
 				return;
 			}
-			// The delta fetch failed: the saved library stays on screen
-			// (`setGames` already holds it), but the sync state is left
-			// stale so the next boot re-checks everything.
+
+			setStatus(fromCache ? 'Updating library…' : 'Loading library…');
+			// Nothing renders while the walk runs: per-batch appends made the
+			// rows pop in and reshuffle (the server streams name-ordered, so
+			// "recently added" keeps displacing tiles), and every reshuffle
+			// queued cover downloads for tiles that were about to be
+			// replaced. The dashboard appears once, complete — the cache
+			// covers every boot after this one.
+			const { games: gs, error, truncated } = await client.getGamesStream(
+				() => {},
+				(loaded, total) => {
+					if (gen !== runGen.current) return;
+					setProgress({ loaded, total });
+					setStatus(`Updating library… ${loaded}${total !== null ? ` / ${total}` : ''}`);
+					setActivity(
+						'library',
+						total !== null
+							? `Library ${Math.min(100, Math.round((loaded / total) * 100))}%`
+							: `Library ${loaded}+`,
+					);
+					// One memory line per ~10% of the walk: the growth curve that
+					// separates "the walk retains" from "something else leaks".
+					if (total !== null) {
+						const step = Math.max(1, Math.round(total / 10));
+						if (loaded % step === 0) log('mem', `walk ${loaded}/${total} ${memSnapshot()}`);
+					} else if (loaded % 100 === 0) {
+						log('mem', `walk ${loaded}+ ${memSnapshot()}`);
+					}
+				},
+				controller.signal,
+			);
+			if (gen !== runGen.current) return;
+
 			setBusy(false);
 			setProgress({ loaded: 0, total: null });
 			setActivity('library', null);
-			setStatus('Saved library shown — update failed');
-			return;
-		}
 
-		setStatus(fromCache ? 'Updating library…' : 'Loading library…');
-		// Nothing renders while the walk runs: per-batch appends made the
-		// rows pop in and reshuffle (the server streams name-ordered, so
-		// "recently added" keeps displacing tiles), and every reshuffle
-		// queued cover downloads for tiles that were about to be
-		// replaced. The dashboard appears once, complete — the cache
-		// covers every boot after this one.
-		const { games: gs, error, truncated } = await client.getGamesStream(
-			() => {},
-			(loaded, total) => {
-				if (gen !== runGen.current) return;
-				setProgress({ loaded, total });
-				setStatus(`Updating library… ${loaded}${total !== null ? ` / ${total}` : ''}`);
-				setActivity(
-					'library',
-					total !== null
-						? `Library ${Math.min(100, Math.round((loaded / total) * 100))}%`
-						: `Library ${loaded}+`,
-				);
-				// One memory line per ~10% of the walk: the growth curve that
-				// separates "the walk retains" from "something else leaks".
-				if (total !== null) {
-					const step = Math.max(1, Math.round(total / 10));
-					if (loaded % step === 0) log('mem', `walk ${loaded}/${total} ${memSnapshot()}`);
-				} else if (loaded % 100 === 0) {
-					log('mem', `walk ${loaded}+ ${memSnapshot()}`);
-				}
-			},
-			controller.signal,
-		);
-		if (gen !== runGen.current) return;
-
-		setBusy(false);
-		setProgress({ loaded: 0, total: null });
-		setActivity('library', null);
-
-		if (controller.signal.aborted) {
-			setStatus('Connection cancelled');
-			// The cache never painted (or it would not be a cancel): no
-			// library to stay in.
-			if (!fromCache) setRoute('settings');
-			return;
-		}
-		if (error !== null) {
-			log('error', `library walk: ${error}`);
-			if (fromCache) {
-				setStatus(`Saved library shown — update failed: ${friendlyNetworkError(error)}`);
+			if (controller.signal.aborted) {
+				setStatus('Connection cancelled');
+				// The cache never painted (or it would not be a cancel): no
+				// library to stay in.
+				if (!fromCache) setRoute('settings');
 				return;
 			}
-			setStatus(`Connection failed: ${friendlyNetworkError(error)}`);
-			setRoute('settings');
-			return;
-		}
+			if (error !== null) {
+				log('error', `library walk: ${error}`);
+				if (fromCache) {
+					setStatus(`Saved library shown — update failed: ${friendlyNetworkError(error)}`);
+					return;
+				}
+				setStatus(`Connection failed: ${friendlyNetworkError(error)}`);
+				setRoute('settings');
+				return;
+			}
 
-		// The walk finished: the canonical list replaces the streamed (or
-		// cached) one, and the screen is left even when the library is
-		// empty.
-		log('mem', `walk-done ${memSnapshot()}`);
-		finish(gs, 'ok', truncated);
+			// The walk finished: the canonical list replaces the streamed (or
+			// cached) one, and the screen is left even when the library is
+			// empty.
+			log('mem', `walk-done ${memSnapshot()}`);
+			finish(gs, 'ok', truncated);
+		} catch (err) {
+			log('error', `connect crashed: ${String(err)}`);
+			setBusy(false);
+			setProgress({ loaded: 0, total: null });
+			setActivity('library', null);
+			setStatus('Connection crashed — see rommate.log');
+		}
 	}, []);
 
 	/** Cancel the in-flight connection (B on the settings screen). */
@@ -503,7 +511,13 @@ export function App() {
 
 	// Auto-connect at startup when credentials are already saved.
 	useEffect(() => {
-		if (hasConfig(cfg)) void connect(cfg);
+		if (hasConfig(cfg)) {
+			void connect(cfg).catch((err) => {
+				log('error', `auto-connect crashed: ${String(err)}`);
+				setBusy(false);
+				setStatus('Connection crashed — see rommate.log');
+			});
+		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
