@@ -133,18 +133,6 @@ export function App() {
 		configureCovers(cfg.token, cfg.baseUrl);
 	}, [cfg.token, cfg.baseUrl]);
 
-	// Load the manifest at boot — even without a server connection — so the
-	// play service can show locally installed ROMs as ready instead of
-	// "demo mode". A later successful connect re-binds with the client.
-	useEffect(() => {
-		let mounted = true;
-		void play.bind(null, cfg);
-		return () => {
-			mounted = false;
-		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
-
 	const connect = useCallback(async (config: Config) => {
 		// Each connection attempt gets a generation number: a late result
 		// (or a walk the user abandoned) must never write state the user

@@ -277,9 +277,10 @@ class PlayService {
 	 * Returns '' on success, or a human error.
 	 */
 	async play(game: RommGame): Promise<string> {
-		const { client, manifest } = this.#context();
+		let { client, manifest } = this.#context();
 		if (manifest === null) {
-			return 'play needs a RomM server (demo mode has none)';
+			manifest = await loadManifest();
+			this.#manifest = manifest;
 		}
 		this.#games.set(game.id, game);
 
