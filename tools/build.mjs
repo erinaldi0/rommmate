@@ -48,3 +48,33 @@ await build({
 });
 
 console.log(`build id: ${buildId}`);
+
+// Write the nx.js runtime configuration into romfs so the packager bundles it.
+// Without nxjs.ini the runtime uses defaults: application mode enables full V8
+// JIT and GPU canvas, which can crash on some consoles; applet mode is jitless
+// and CPU-raster, which is known stable. nxjs.ini disables JIT and caps the heap.
+import { writeFileSync } from 'node:fs';
+try {
+	writeFileSync(
+		'romfs/nxjs.ini',
+		`# nx.js runtime configuration for RomMmate\n` +
+		`# Tuned for stability on the Nintendo Switch\n` +
+		`\n` +
+		`[v8]\n` +
+		`# Disable JIT compilation — matches applet mode (jitless) which is known stable\n` +
+		`# Full JIT in application mode can crash on some consoles/firmware versions\n` +
+		`jit = false\n` +
+		`\n` +
+		`[memory]\n` +
+		`# Cap the V8 heap at 512 MB — application mode defaults to ~3 GiB but some\n` +
+		`# consoles can't sustain that; applet mode uses ~380 MiB successfully\n` +
+		`heap_limit = 512\n` +
+		`\n` +
+		`[renderer]\n` +
+		`# CPU raster is stable; GPU canvas (WebGL2) can fail on some firmware versions\n` +
+		`canvas = cpu\n`,
+	);
+	console.log('wrote romfs/nxjs.ini');
+} catch {
+	console.log('warning: could not write romfs/nxjs.ini');
+}
