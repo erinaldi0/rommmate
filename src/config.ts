@@ -37,6 +37,7 @@ const KEY_RA_USERNAME = 'rommate.raUsername';
 const KEY_RA_PASSWORD = 'rommate.raPassword';
 const KEY_RA_HARDCORE = 'rommate.raHardcore';
 const KEY_RA_UNOFFICIAL_ROMS = 'rommate.raUnofficialRoms';
+const KEY_RETROARCH_TITLE_ID = 'rommate.retroarchTitleId';
 
 /**
  * Which keyboard opens for the text fields.
@@ -122,6 +123,14 @@ export interface Config {
 	 * not recognise. Default off (RA blocks tracking for unmatched dumps).
 	 */
 	raUnofficialRoms?: boolean;
+	/**
+	 * RetroArch installed as an NSP title — its 64-bit Title ID (e.g.
+	 * `0x0100AB0123456789n`). When set, RetroArch is launched by Title ID
+	 * instead of by the loader NRO path, because `envSetNextLoad` (used
+	 * by the NRO-path launch) is blocked when the app runs as an
+	 * installed NSP. Absent = launch the loader NRO at `sdmc:/switch/retroarch_switch.nro`.
+	 */
+	retroarchTitleId?: string;
 }
 
 /** Validate an untrusted value as the per-platform core picks. */
@@ -176,6 +185,7 @@ function configFromJson(raw: string): Config | null {
 			raPassword: str(o.raPassword),
 			raHardcore: o.raHardcore === true,
 			raUnofficialRoms: o.raUnofficialRoms === true,
+			retroarchTitleId: str(o.retroarchTitleId),
 		};
 	} catch {
 		return null;
@@ -220,6 +230,7 @@ export function loadConfig(): Config {
 			raPassword: ls?.getItem(KEY_RA_PASSWORD) ?? '',
 			raHardcore: ls?.getItem(KEY_RA_HARDCORE) === 'true',
 			raUnofficialRoms: ls?.getItem(KEY_RA_UNOFFICIAL_ROMS) === 'true',
+			retroarchTitleId: ls?.getItem(KEY_RETROARCH_TITLE_ID) ?? undefined,
 		};
 		// First boot on a device that only ever had the Save-Data copy:
 		// promote it to the SD so the profile-less launches keep it too.
@@ -267,6 +278,7 @@ export function saveConfig(cfg: Config): void {
 		raPassword: sanitize(cfg.raPassword ?? ''),
 		raHardcore: cfg.raHardcore === true,
 		raUnofficialRoms: cfg.raUnofficialRoms === true,
+		retroarchTitleId: cfg.retroarchTitleId,
 	};
 	// Primary: the SD file (no profile or save-data dependency). A
 	// power-cut mid-write costs the file — the localStorage copy below
@@ -304,6 +316,7 @@ export function saveConfig(cfg: Config): void {
 		localStorage?.setItem(KEY_RA_PASSWORD, clean.raPassword);
 		localStorage?.setItem(KEY_RA_HARDCORE, clean.raHardcore ? 'true' : 'false');
 		localStorage?.setItem(KEY_RA_UNOFFICIAL_ROMS, clean.raUnofficialRoms ? 'true' : 'false');
+		localStorage?.setItem(KEY_RETROARCH_TITLE_ID, clean.retroarchTitleId ?? '');
 	} catch {
 		// Save Data is unavailable (or full) — the SD copy above is what
 		// the next launch reads.

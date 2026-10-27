@@ -24,6 +24,7 @@ import {
 	ensureReadyFor,
 	findToolingPlatform,
 	listToolingFiles,
+	scanExistingInstall,
 	type ToolingFile,
 } from './retroarch/emulator';
 import { installGame, uninstallGame, onManifestChanged } from './roms/install';
@@ -287,29 +288,27 @@ class PlayService {
 			return 'install the rom first';
 		}
 
-		// With a server client, provision core + emulator first (they may
-		// be missing or stale). Offline, trust what's already installed:
-		// the core and the loader must both be in the manifest.
-		if (client !== null) {
-			const tooling = await this.#toolingFiles(client);
-			const ready = await ensureReadyFor(
-				client,
-				manifest,
-				game.platform,
-				game.platformId,
-				tooling,
-				this.#choiceFor(game.platform),
-				this.#config,
-			);
-			if (!ready.ok) return ready.error;
-		} else {
-			const core = manifest.cores[platformSlug(game.platform)];
-			if (core === undefined) return 'no core installed for this platform';
-			const emulator = manifest.emulator;
-			if (emulator === null || !(await exists(emulator.path))) {
-				return 'RetroArch loader not installed — connect to the server once';
-			}
-		}
+		// No server client: populate the manifest from what is already on
+		// the SD card (loader, icon, cores) so offline play works without
+		// ever contacting the server or the buildbot.
+		if (client === null) await scanExistingInstall(manifest);
+
+		// Provision the core and emulator from whatever source is available:
+		// buildbot (direct HTTPS, no server needed) first, then the server's
+		// tooling platform as fallback. Works offline — the buildbot is a
+		// direct web source, not a server endpoint.
+		const tooling = client !== null ? await this.#toolingFiles(client) : [];
+		const choice = this.#choiceFor(game.platform);
+		const ready = await ensureReadyFor(
+			client,
+			manifest,
+			game.platform,
+			game.platformId,
+			tooling,
+			choice,
+			this.#config,
+		);
+		if (!ready.ok) return ready.error;
 
 		const core = manifest.cores[platformSlug(game.platform)];
 		if (core === undefined) return 'no core installed for this platform';
@@ -320,7 +319,7 @@ class PlayService {
 			saves.map((f) => ({ path: f.path, size: f.size, mtime: f.mtime, hash: f.hash })),
 		);
 
-		const result = launchRetroArch(PATHS.loader, core.path, entry.playPath);
+		const result = launchRetroArch(PATHS.loader, core.path, entry.playPath, this.#config);
 		if (!result.ok) return result.error ?? 'launch failed';
 		return '';
 	}

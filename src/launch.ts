@@ -19,9 +19,11 @@
  */
 import { isSwitch } from './fs';
 import { log } from './log';
+import type { Config } from './config';
 
 interface SwitchApplicationLike {
 	new (path: string): { launch(...args: string[]): never };
+	new (id: bigint): { launch(...args: string[]): never };
 }
 
 interface SwitchWebAppletLike {
@@ -43,27 +45,55 @@ export function canLaunch(): boolean {
 /**
  * Start RetroArch with a core and a game, booting straight into the game.
  *
+ * When `config.retroarchTitleId` is set (RetroArch installed as an NSP
+ * title), launches by Title ID — that code path works from an installed
+ * NSP, unlike `envSetNextLoad` which is used by the NRO-path launch.
+ *
  * @returns ok when the process is on its way; an error string when the
  *          launch could not even be attempted (off-device, or the loader
  *          is gone) — the process keeps running in that case.
  */
-export function launchRetroArch(loaderPath: string, corePath: string, gamePath: string): {
-	ok: boolean;
-	error?: string;
-} {
+export function launchRetroArch(
+	loaderPath: string,
+	corePath: string,
+	gamePath: string,
+	config: Config | null = null,
+): { ok: boolean; error?: string } {
 	if (!canLaunch()) {
 		return { ok: false, error: 'launching needs the Switch runtime (browser preview cannot start apps)' };
 	}
+	const App = Switch?.Application;
+	if (App === undefined) {
+		return { ok: false, error: 'Switch runtime not available' };
+	}
 	try {
 		log('launch', `retroarch loader=${loaderPath} core=${corePath} game=${gamePath}`);
-		new Switch!.Application!(loaderPath).launch('-L', corePath, gamePath);
+		let app: InstanceType<typeof App>;
+		if (
+			config !== null &&
+			typeof config.retroarchTitleId === 'string' &&
+			config.retroarchTitleId.trim() !== ''
+		) {
+			// Title ID string like "0x0100AB0123456789" — RetroArch as an NSP title.
+			// Launching by Title ID works from an installed NSP (envSetNextLoad
+			// does not).
+			const id = BigInt(
+				config.retroarchTitleId.startsWith('0x') || config.retroarchTitleId.startsWith('0X')
+					? config.retroarchTitleId
+					: `0x${config.retroarchTitleId}`,
+			);
+			log('launch', `retroarch by Title ID: ${config.retroarchTitleId}`);
+			app = new App(id);
+		} else {
+			log('launch', `retroarch by NRO path: ${loaderPath}`);
+			app = new App(loaderPath);
+		}
+		app.launch('-L', corePath, gamePath);
 	} catch (err) {
 		const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 		log('error', `launch: ${message}`);
 		return { ok: false, error: message };
 	}
-	// `launch` is `never`: reaching here means it returned without leaving,
-	// which the runtime documents as "the app will exit after this call".
 	return { ok: true };
 }
 

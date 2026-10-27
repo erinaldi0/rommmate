@@ -19,7 +19,7 @@ import type { Config } from '../config';
 import type { RommClient, RommGame, RommPlatform } from '../romm';
 import { getFirmware } from '../romm/play';
 import { PATHS, platformSlug } from './layout';
-import { coreEntryFor, type CoreChoice } from './cores';
+import { coreEntryFor, type CoreChoice, CORE_MAP } from './cores';
 import { sevenZipExtract } from './zip7';
 import { downloadQueue } from '../roms/download';
 import { saveManifest, type Manifest, type ManifestFile } from '../manifest';
@@ -42,6 +42,84 @@ const RETROARCH_7Z_URL = 'https://buildbot.libretro.com/stable/1.22.2/nintendo/s
 
 /** Matched recursively (see zip7) against the release archive's inner paths. */
 const LOADER_7Z_PATTERNS = ['retroarch_switch.nro', 'retroarch.jpg'];
+
+/**
+ * Scan the SD card for RetroArch files already in place (loader, icon,
+ * cores) and stamp them into the manifest so offline play works without
+ * ever contacting the server. Called at Play time when there is no
+ * server client bound — everything else in this module assumes a client
+ * exists for the server fallback.
+ *
+ * Files on disk:
+ *   sdmc:/switch/retroarch_switch.nro        → emulator
+ *   sdmc:/retroarch.jpg                      → icon
+ *   sdmc:/retroarch/cores/{core}_libretro_libnx.nro → per-platform core
+ *
+ * @returns true when anything was added to the manifest.
+ */
+export async function scanExistingInstall(manifest: Manifest): Promise<boolean> {
+	let added = false;
+
+	// Emulator loader.
+	if (manifest.emulator === null && (await exists(PATHS.loader))) {
+		manifest.emulator = {
+			path: PATHS.loader,
+			size: 0,
+			hash: '',
+			serverHash: '',
+			serverSize: 0,
+			serverModified: '',
+			installedAt: new Date().toISOString(),
+		};
+		added = true;
+		log('emulator', `scanned loader from disk: ${PATHS.loader}`);
+	}
+
+	// Launcher icon.
+	if (manifest.icon === null && (await exists(PATHS.icon))) {
+		manifest.icon = {
+			path: PATHS.icon,
+			size: 0,
+			hash: '',
+			serverHash: '',
+			serverSize: 0,
+			serverModified: '',
+			installedAt: new Date().toISOString(),
+		};
+		added = true;
+		log('emulator', `scanned icon from disk: ${PATHS.icon}`);
+	}
+
+	// Per-platform cores: check each known choice's expected filename.
+	for (const entry of CORE_MAP) {
+		const slug = platformSlug(entry.display);
+		if (manifest.cores[slug] !== undefined) continue; // already stamped
+
+		for (const choice of entry.choices) {
+			// The buildbot base name matches the on-disk file name
+			// (e.g. pcsx_rearmed → pcsx_rearmed_libretro_libnx.nro).
+			const coreName = choice.bb ?? choice.id;
+			const corePath = `${PATHS.coresDir}/${coreName}_libretro_libnx.nro`;
+			if (await exists(corePath)) {
+				manifest.cores[slug] = {
+					path: corePath,
+					size: 0,
+					hash: '',
+					serverHash: '',
+					serverSize: 0,
+					serverModified: '',
+					installedAt: new Date().toISOString(),
+				};
+				added = true;
+				log('core', `scanned ${entry.display} → ${choice.label} from disk: ${corePath}`);
+				break; // one core per platform is enough
+			}
+		}
+	}
+
+	if (added) await saveManifest(manifest);
+	return added;
+}
 
 /** One file from the tooling platform, as the server reports it. */
 export interface ToolingFile {
@@ -213,7 +291,7 @@ function cachePath(file: ToolingFile): string {
  * a current install costs one manifest lookup.
  */
 export async function ensureEmulator(
-	client: RommClient,
+	client: RommClient | null,
 	manifest: Manifest,
 	signal?: AbortSignal,
 	config: Config | null = null,
@@ -310,8 +388,9 @@ export async function ensureEmulator(
 		}
 	}
 	// A failed (or NRO-less) web pull falls back to the server's uploads:
-	// their error messages only land when the fallback fails too.
-
+	// their error messages only land when the fallback fails too. Requires
+	// a server client — offline, the web path is the only source.
+	if (client !== null) {
 	const platform = await findToolingPlatform(client, signal);
 	if (platform === null) {
 		return {
@@ -377,6 +456,13 @@ export async function ensureEmulator(
 	await saveManifest(manifest);
 	log('emulator', `loader placed from ${loader.fileName}`);
 	return { ok: true, error: '', onServer: true, installed: true };
+	}
+	return {
+		ok: false,
+		error: 'RetroArch loader is not installed and the server is unreachable — connect to the server to download it',
+		onServer: false,
+		installed,
+	};
 }
 
 /**
@@ -543,7 +629,7 @@ async function buildbotIsCurrent(
  * @returns the outcome, shaped for the caller.
  */
 export async function ensureCore(
-	client: RommClient,
+	client: RommClient | null,
 	manifest: Manifest,
 	platformName: string,
 	choice: CoreChoice,
@@ -639,6 +725,9 @@ export async function ensureCore(
 		return { ok: true, error: '', onServer: true, installed: true };
 	}
 
+	// The server download needs a live client — offline, the buildbot
+	// path above is the only source.
+	if (client !== null) {
 	const status = await downloadQueue.add({
 		id: `core:${slug}:${choice.id}`,
 		kind: 'core',
@@ -674,6 +763,13 @@ export async function ensureCore(
 	await saveManifest(manifest);
 	log('core', `${platformName} → ${choice.label} (${placedAt})`);
 	return { ok: true, error: '', onServer: true, installed: true };
+	}
+	return {
+		ok: false,
+		error: `the ${choice.label} core is not on the server — upload it to the ${TOOLING_PLATFORM} platform`,
+		onServer: false,
+		installed,
+	};
 }
 
 /**
@@ -740,7 +836,7 @@ async function anyBiosOnDisk(manifest: Manifest): Promise<boolean> {
  * @returns the outcome, shaped for the caller.
  */
 export async function ensureBios(
-	client: RommClient,
+	client: RommClient | null,
 	manifest: Manifest,
 	platformName: string,
 	platformId: number,
@@ -758,11 +854,20 @@ export async function ensureBios(
 	// those), what we have locally is what we play with.
 	const haveAny = await anyBiosOnDisk(manifest);
 
-	const fw = await getFirmware(client, platformId, signal);
+	// Can't list firmware without a server client — fall straight to the
+	// offline check: if a BIOS is already on disk, we play with it.
+	const fw = client !== null ? await getFirmware(client, platformId, signal) : null;
 	if (fw === null) {
 		if (haveAny) {
 			log('bios', `firmware listing unavailable — playing with the installed BIOS (${platformName})`);
 			return { ok: true, error: '', onServer: false, installed: true };
+		}
+		// Offline with no BIOS installed: BIOS is nice-to-have, not
+		// strictly required for every core (e.g. PCSX ReARMed has an HLE
+		// BIOS). Allow play and log a warning rather than blocking.
+		if (client === null) {
+			log('bios', `no BIOS installed for ${platformName} — play may fail without one`);
+			return { ok: true, error: '', onServer: false, installed: false };
 		}
 		return {
 			ok: false,
@@ -786,6 +891,7 @@ export async function ensureBios(
 			(f.sizeBytes === 0 || record.serverSize === f.sizeBytes);
 		if (current) continue;
 
+		if (client !== null) {
 		const status = await downloadQueue.add({
 			id: `bios:${f.id}`,
 			kind: 'bios',
@@ -813,12 +919,13 @@ export async function ensureBios(
 			await saveManifest(manifest);
 			installed = true;
 		}
+		}
 	}
-	installed = installed || fw.length === 0;
+	installed = installed || (fw !== null && fw.length === 0);
 	return {
 		ok: installed,
 		error: installed ? '' : `the BIOS for ${platformName} is missing on the server`,
-		onServer: fw.length > 0,
+		onServer: fw !== null && fw.length > 0,
 		installed,
 	};
 }
@@ -829,7 +936,7 @@ export async function ensureBios(
  * launch path.
  */
 export async function ensureReadyFor(
-	client: RommClient,
+	client: RommClient | null,
 	manifest: Manifest,
 	platformName: string,
 	platformId: number,
