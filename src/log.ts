@@ -1,5 +1,5 @@
 /**
- * On-device log file: `sdmc:/switch/rommate.log`.
+ * On-device log file: `sdmc:/switch/rommmate/rommate.log`.
  *
  * The app's `console` is the nx.js on-screen terminal (gone at reboot) and
  * the runtime's own diagnostics land in `sdmc:/nxjs-debug.log` — neither
@@ -12,7 +12,7 @@
  * session down.
  */
 
-const LOG_PATH = 'sdmc:/switch/rommate.log';
+const LOG_PATH = 'sdmc:/switch/rommmate/rommate.log';
 
 type Switchish = { appendFileSync?: (path: string, data: string) => void };
 

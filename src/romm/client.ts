@@ -11,6 +11,10 @@ import {
 	parseFiles,
 	parseGenres,
 	parsePlatform,
+	parseRaAchievements,
+	parseRaHash,
+	parseRaId,
+	parseRaProgression,
 	parseReleaseDate,
 	parseScreenshot,
 	parseSize,
@@ -27,7 +31,15 @@ import {
 	parsePage,
 } from './dialect';
 import { ItemStream, utf8IncompleteTail } from './stream';
-import type { GetGamesOptions, RommCollection, RommGame, RommPlatform, RommSibling } from './types';
+import type {
+	GetGamesOptions,
+	RommCollection,
+	RommGame,
+	RommPlatform,
+	RomRAchievement,
+	RomRATag,
+	RommSibling,
+} from './types';
 
 /**
  * The largest page a modern (5.x) server answers with, per its own API
@@ -372,7 +384,11 @@ export class RommClient {
 
 		const id = typeof e['id'] === 'number' ? e['id'] : 0;
 		const name = typeof e['name'] === 'string' ? e['name'].trim() : '';
-		const fsName = firstString(e, ['fs_name_no_tags', 'fs_name']);
+		// `fs_name_no_ext` keeps the trailing tags (`(Italy) (Disc 2)`);
+		// `fs_name_no_tags` strips them too, which makes the discs of an
+		// identified release indistinguishable — the tag-stripped name is
+		// the fallback, the full name (with extension) the last resort.
+		const fsName = firstString(e, ['fs_name_no_ext', 'fs_name_no_tags', 'fs_name']);
 
 		// Per-user state: 5.x nests it in `rom_user`; the list response of
 		// other versions keeps the same fields at the top level.
@@ -395,7 +411,9 @@ export class RommClient {
 			siblings.push({
 				id: sid,
 				sort: typeof so['sort_comparator'] === 'string' ? so['sort_comparator'] : '',
-				fsName: firstString(so, ['fs_name_no_tags', 'fs_name_no_ext']),
+				// `fs_name_no_ext` first: it keeps the disc tags, so a stub
+				// still carries the one marker that tells the discs apart.
+				fsName: firstString(so, ['fs_name_no_ext', 'fs_name_no_tags']),
 				name: typeof so['name'] === 'string' ? so['name'].trim() : '',
 				isMain: so['is_main_sibling'] === true,
 			});
@@ -444,6 +462,8 @@ export class RommClient {
 			md5Hash: firstString(e, ['md5_hash']),
 			files: parseFiles(e),
 			hasMultipleFiles: e['has_multiple_files'] === true,
+			raId: parseRaId(e),
+			raHash: parseRaHash(e),
 		};
 	}
 
@@ -468,6 +488,76 @@ export class RommClient {
 		} catch (err) {
 			if (signal?.aborted) return { game: null, error: 'cancelled' };
 			return { game: null, error: String(err) };
+		}
+	}
+
+	/**
+	 * The current user's RetroAchievements identity + progression
+	 * (`GET /api/users/me` — RomM 5.x ingests the user's linked RA account).
+	 * Returns null when the route is absent (a pre-5.x server) or the call
+	 * fails; callers treat that as "no linked RA account" and degrade.
+	 */
+	async getRaTag(signal?: AbortSignal): Promise<RomRATag | null> {
+		try {
+			const res = await this.#request('/api/users/me', {}, signal);
+			if (res.status === 404 || !res.ok) return null;
+			const json: unknown = await res.json();
+			if (typeof json !== 'object' || json === null) return null;
+			const u = json as Record<string, unknown>;
+			const id = typeof u['id'] === 'number' ? u['id'] : 0;
+			return {
+				userId: id,
+				raUsername:
+					typeof u['ra_username'] === 'string' && u['ra_username'] !== '' ? u['ra_username'] : null,
+				progression: parseRaProgression(u),
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * One rom's published achievement set. The single-rom route carries
+	 * `merged_ra_metadata`, which the list walk omits (a full achievement
+	 * set per rom would bloat the library cache), so the achievements
+	 * screen fetches this on demand. `[]` when the server has no RA data
+	 * for the rom (404, or an un-matched dump); null on a hard failure.
+	 */
+	async getGameRaAchievements(
+		romId: number,
+		signal?: AbortSignal,
+	): Promise<RomRAchievement[] | null> {
+		try {
+			const res = await this.#request(`/api/roms/${romId}`, {}, signal);
+			if (res.status === 404) return [];
+			if (!res.ok) return null;
+			const json: unknown = await res.json();
+			if (typeof json !== 'object' || json === null) return [];
+			return parseRaAchievements(json as Record<string, unknown>);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Ask RomM to re-pull the user's RA progress (the app's achievements
+	 * screen calls this so progress earned inside RetroArch shows up).
+	 * Best-effort: a pre-5.x server 404s and we report false.
+	 */
+	async refreshRa(userId: number, signal?: AbortSignal, incremental = true): Promise<boolean> {
+		try {
+			const res = await this.#request(
+				`/api/users/${userId}/ra/refresh`,
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ incremental }),
+				},
+				signal,
+			);
+			return res.ok;
+		} catch {
+			return false;
 		}
 	}
 

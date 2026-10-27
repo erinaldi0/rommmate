@@ -25,7 +25,7 @@
  *     RangeError on hardware).
  *
  * Two storage backends, picked at runtime:
- *   - nx.js on the Switch: `sdmc:/rommate/covers/<hash>.png`
+ *   - nx.js on the Switch: `sdmc:/switch/rommmate/covers/<hash>.png`
  *   - browser preview harness: an object URL (no filesystem available)
  *
  * Every failure path is silent by design: a missing or broken cover must
@@ -66,7 +66,7 @@ export interface CoverRequest {
 	fit?: Fit;
 }
 
-const CACHE_DIR = 'sdmc:/rommate/covers';
+const CACHE_DIR = 'sdmc:/switch/rommmate/covers';
 
 /**
  * How many artwork downloads may be in flight at once. Each one holds the

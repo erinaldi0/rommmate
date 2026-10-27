@@ -134,36 +134,48 @@ export async function localSaveFiles(manifest: Manifest): Promise<LocalSaveFile[
 	const index = romBaseIndex(manifest);
 	const out: LocalSaveFile[] = [];
 
-	const scanDir = async (dir: string, isState: boolean) => {
+	const scanDir = async (dir: string, isState: boolean, romIdFromDir?: number) => {
 		const entries = await listDir(dir);
 		if (entries === null) return;
 		for (const entry of entries) {
-			if (!entry.isFile) continue;
 			const path = `${dir}/${entry.name}`;
-			const size = await fileSize(path);
-			if (size < 0) continue; // a vanished file (deleted mid-walk)
-			const mtime = await fileMtime(path);
-			const base = isState ? stateBaseName(entry.name) : baseName(entry.name);
-			const match = index.get(base.toLowerCase());
+			if (entry.isFile) {
+				const size = await fileSize(path);
+				if (size < 0) continue; // a vanished file (deleted mid-walk)
+				const mtime = await fileMtime(path);
+				const base = isState ? stateBaseName(entry.name) : baseName(entry.name);
+				const match = index.get(base.toLowerCase());
+				// A file inside a per-rom dir (<romId>/<file>) takes its romId
+				// from the directory name; a flat file at the root is matched
+				// by base name against the installed roms.
+				const romId = romIdFromDir ?? match?.romId ?? 0;
 
-			const changed = isChanged(path, size, mtime, manifest);
-			const snap = manifest.saveSnapshot[path];
-			// Hash only what moved; otherwise reuse the remembered hash.
-			const hash = changed ? (await md5File(path)) ?? '' : snap?.hash ?? '';
+				const changed = isChanged(path, size, mtime, manifest);
+				const snap = manifest.saveSnapshot[path];
+				// Hash only what moved; otherwise reuse the remembered hash.
+				const hash = changed ? (await md5File(path)) ?? '' : snap?.hash ?? '';
 
-			out.push({
-				path,
-				fileName: entry.name,
-				baseName: base,
-				romId: match?.romId ?? 0,
-				romName: match?.name ?? '',
-				isState,
-				slot: slotFor(entry.name, isState),
-				size,
-				mtime,
-				hash,
-				changed,
-			});
+				out.push({
+					path,
+					fileName: entry.name,
+					baseName: base,
+					romId,
+					romName: match?.name ?? '',
+					isState,
+					slot: slotFor(entry.name, isState),
+					size,
+					mtime,
+					hash,
+					changed,
+				});
+			} else {
+				// A subdirectory at the root is a per-rom folder: its name
+				// is the rom id. Recurse into it with that rom id.
+				const dirRomId = Number(entry.name);
+				if (Number.isFinite(dirRomId) && dirRomId > 0) {
+					await scanDir(path, isState, dirRomId);
+				}
+			}
 		}
 	};
 

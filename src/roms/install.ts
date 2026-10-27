@@ -49,26 +49,39 @@ export interface InstallResult {
 }
 
 /**
- * The rom's files, from the entry or — when the list omitted them — the
- * single-rom route, which 5.x answers with the full `files` array.
+ * The rom's files, from the single-rom route — or, when it cannot be
+ * reached, from the library entry.
+ *
+ * The single-rom route comes FIRST on purpose: the `game` in hand may be a
+ * library entry read from the local cache, and the file list it carries
+ * (sizes, MD5s) is whatever the server reported at the last walk. The file
+ * on the server may have been re-scanned or replaced since, and a download
+ * planned against stale sizes is how the app ends up "mentioning" 507 MB
+ * while writing a 525 MB file. One small `GET /api/roms/{id}` per install
+ * keeps the plan honest; the cached entry's own files are the fallback when
+ * the fetch fails (offline), and the fs_name the last resort.
  */
 async function resolveFiles(
 	client: RommClient,
 	game: RommGame,
 	signal?: AbortSignal,
 ): Promise<RommRomFile[]> {
-	if (game.files.length > 0) return game.files;
 	const { game: fresh } = await client.getRom(game.id, signal);
 	if (fresh !== null && fresh.files.length > 0) return fresh.files;
-	// Last resort: the entry's own fs_name (single-file roms carry it).
-	if (game.fsName !== '') {
+	if (game.files.length > 0) return game.files;
+	// Last resort: the fs_name (single-file roms carry it) — the fresh
+	// record's when the server answered, the cached entry's otherwise. The
+	// single-rom route keeps the file's own MD5 at the top level, so a
+	// single-file rom from a live answer still verifies.
+	const name = fresh !== null && fresh.fsName !== '' ? fresh.fsName : game.fsName;
+	if (name !== '') {
 		return [
 			{
-				fileName: game.fsName,
-				sizeBytes: game.sizeBytes,
-				md5Hash: '',
-				extension: game.fsName.includes('.')
-					? game.fsName.slice(game.fsName.lastIndexOf('.') + 1).toLowerCase()
+				fileName: name,
+				sizeBytes: fresh !== null && fresh.sizeBytes > 0 ? fresh.sizeBytes : game.sizeBytes,
+				md5Hash: fresh !== null && fresh.hasMultipleFiles === false ? fresh.md5Hash : '',
+				extension: name.includes('.')
+					? name.slice(name.lastIndexOf('.') + 1).toLowerCase()
 					: '',
 				topLevel: true,
 				memberCount: 0,
@@ -170,6 +183,11 @@ export async function installGame(
 				void onRomFileDone(game, plan, status, manifest);
 			},
 		});
+		// The file name makes it into the log: every disc of a release
+		// shares the game's name, so "queued" alone would not say WHICH
+		// disc is being pulled (the download queue's own lines carry only
+		// the label).
+		log('install', `${game.name !== '' ? game.name : `rom ${game.id}`}: queueing ${file.fileName}`);
 		queued += 1;
 	}
 
@@ -219,8 +237,9 @@ async function onRomFileDone(
 	};
 
 	if (status !== 'done') {
-		entry.outdated = true;
-		await saveManifest(manifest);
+		// A failed download changes nothing on disk — don't mark the
+		// manifest outdated. The error surfaces via the queue item's
+		// status text instead of a misleading "Outdated on server".
 		fireManifestChanged();
 		return;
 	}
@@ -238,9 +257,18 @@ async function onRomFileDone(
 		}
 	}
 
+	// The size actually written to disk, not the size the record claimed:
+	// when the two differ (a file re-scanned or replaced on the server) the
+	// local truth is what the next staleness check can rely on — the
+	// `serverSize`/`serverHash` fields keep the record's values, so a later
+	// record refresh still registers as a move.
+	let size = plan.file.sizeBytes;
+	const actual = await fileSize(plan.dest);
+	if (actual > 0) size = actual;
+
 	const file: ManifestFile = {
 		path: plan.dest,
-		size: plan.file.sizeBytes,
+		size,
 		hash: plan.file.md5Hash,
 		serverHash: plan.file.md5Hash,
 		serverSize: plan.file.sizeBytes,

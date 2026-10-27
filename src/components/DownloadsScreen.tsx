@@ -93,10 +93,23 @@ export function DownloadsScreen({ onBack }: Props) {
 			case 'queued':
 				return 'waiting…';
 			case 'running':
+				if (item.phase === 'verifying') {
+					return item.size > 0
+						? `verifying · ${Math.floor(item.progress * 100)}%`
+						: `verifying · ${fmtBytes(item.transferred)}`;
+				}
 				return item.size > 0
 					? `${Math.floor(item.progress * 100)}% · ${fmtBytes(item.transferred)} / ${fmtBytes(item.size)}`
 					: `${fmtBytes(item.transferred)}`;
 			case 'done':
+				// The note (a size the server sent that the library entry
+				// did not list) rides on the done row, where a bare "done"
+				// would paper over it.
+				if (item.note !== '') {
+					return item.size > 0
+						? `done · ${fmtBytes(item.size)} — ${item.note}`
+						: `done — ${item.note}`;
+				}
 				return item.size > 0 ? `done · ${fmtBytes(item.size)}` : 'done';
 			case 'error':
 				return item.error !== '' ? item.error : 'failed';
@@ -161,7 +174,13 @@ export function DownloadsScreen({ onBack }: Props) {
 								y={y + 12}
 								fontFamily={fontFamily}
 								fontSize={fontSize.small}
-								fill={item.status === 'error' ? colors.danger : colors.textFaint}
+								fill={
+									item.status === 'error'
+										? colors.danger
+										: item.status === 'done' && item.note !== ''
+											? colors.warning
+											: colors.textFaint
+								}
 								textAlign="right"
 								maxWidth={ROW_W - 560}
 								overflow="ellipsis"

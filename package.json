@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@nx.js/constants": "0.4.1",
+    "7z-wasm": "^1.2.0",
     "fflate": "^0.8.3",
     "react": "^18.3.1",
     "react-tela": "1.0.1",

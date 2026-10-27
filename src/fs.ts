@@ -44,6 +44,28 @@ export function isSwitch(): boolean {
 	return typeof Switch !== 'undefined' && Switch !== null;
 }
 
+/**
+ * Normalise a byte slice to the standalone `ArrayBuffer` that both
+ * `SparkMD5.ArrayBuffer.append` and the runtime's fs write functions
+ * handle correctly.
+ *
+ * The runtime hands out typed array *views* (a body chunk is a `subarray`
+ * of the socket's scratch buffer, and `readBinary` windows can be slices).
+ * Consumer-side code that does `new Uint8Array(buffer)`-style reads —
+ * spark-md5 3.0.2's `append` among them — silently reads the wrong bytes
+ * for a view with a non-zero `byteOffset`. A view that spans its whole
+ * buffer exactly can pass its buffer through as-is (zero copy); any other
+ * view is copied into its own.
+ */
+export function standaloneBuffer(data: ArrayBuffer | Uint8Array): ArrayBuffer {
+	if (data instanceof Uint8Array) {
+		return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+			? (data.buffer as ArrayBuffer)
+			: (data.slice().buffer as ArrayBuffer);
+	}
+	return data;
+}
+
 // ── the in-browser stand-in for `sdmc:` ─────────────────────────────────────
 
 interface MemoryNode {
@@ -112,8 +134,15 @@ export function sdFreeSpace(): number | null {
 /**
  * Read a whole file (or a byte window of it).
  *
- * @param opts.start / opts.end the window, like `Switch.readFile`
- *          (the runtime's `end` is inclusive).
+ * `opts.start` / `opts.end` select the window `[start, end)` — `end` is
+ * EXCLUSIVE, mirroring the device runtime's actual behaviour: the runtime's
+ * docs call `end` inclusive, but on-device `Switch.readFile` returns one
+ * byte less (verified 1.0.0-beta.7: a requested 1 MiB window came back
+ * 1,048,575 bytes). Callers must therefore never assume a requested window
+ * size — they must advance by the length actually returned (see
+ * `readBinary`'s windowed users in `hash.ts` / `romChecksum.ts`).
+ *
+ * @param opts.start / opts.end the window (`end` exclusive).
  * @returns the bytes, or null when the file does not exist.
  */
 export async function readBinary(
@@ -130,17 +159,21 @@ export async function readBinary(
 	const node = walk(path, false);
 	if (node?.data === undefined) return null;
 	const start = Math.max(0, opts?.start ?? 0);
-	const end = Math.min(node.data.length, (opts?.end ?? node.data.length) + 1);
+	// Exclusive `end`, exactly like the device runtime (see the doc above).
+	const end = Math.min(node.data.length, opts?.end ?? node.data.length);
 	return node.data.slice(start, end).buffer;
 }
 
 /** Write a whole file (parent directories created). */
 export async function writeBinary(path: string, data: ArrayBuffer | Uint8Array): Promise<void> {
-	const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
 	if (isSwitch()) {
-		Switch!.writeFileSync!(path, bytes);
+		// A standalone buffer: the runtime's write path (like spark-md5's
+		// append) can mis-read a view with a non-zero byteOffset and write
+		// the wrong bytes — the download-corruption class of bug.
+		Switch!.writeFileSync!(path, standaloneBuffer(data));
 		return;
 	}
+	const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
 	ensureParent(path);
 	const segs = parts(path);
 	const dir = walk(segs.slice(0, -1).join('/') || '/', true);
@@ -158,11 +191,16 @@ export async function writeBinary(path: string, data: ArrayBuffer | Uint8Array):
 
 /** Append bytes to a file (created if absent) — the streaming-write path. */
 export async function appendBinary(path: string, data: ArrayBuffer | Uint8Array): Promise<void> {
-	const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
 	if (isSwitch()) {
-		Switch!.appendFileSync!(path, bytes);
+		// A standalone buffer, always: the staged download chunks are
+		// subarray views of the socket's scratch buffer, and a view with a
+		// non-zero byteOffset written through the runtime's append can lay
+		// down the wrong bytes with the right byte count — a file that
+		// passes the size check and fails the hash, every time.
+		Switch!.appendFileSync!(path, standaloneBuffer(data));
 		return;
 	}
+	const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
 	ensureParent(path);
 	const segs = parts(path);
 	const dir = walk(segs.slice(0, -1).join('/') || '/', true);
@@ -248,12 +286,22 @@ export async function fileSize(path: string): Promise<number> {
 	return node?.data !== undefined ? node.data.length : -1;
 }
 
-/** The last-modified epoch-ms of a file, or 0 when unknown. */
+/**
+ * The last-modified time in epoch **milliseconds**, or 0 when unknown.
+ *
+ * The runtime's `statSync` reports epoch *seconds* (`st_mtim.tv_sec`, see
+ * its `FsFile.lastModified` multiplying by 1000); the app's contract is ms
+ * everywhere (`new Date(x)`, `Date.parse` comparisons, the preview's
+ * `Date.now()` nodes), so the seconds are converted here — a sync layer
+ * that fed seconds to `new Date()` silently reported 1970 timestamps to
+ * the server, and a 0 crossed the wire as an empty string that RomM's
+ * schema rejects (422) and sank the whole negotiate.
+ */
 export async function fileMtime(path: string): Promise<number> {
 	if (isSwitch()) {
 		try {
 			const m = Switch!.statSync!(path)?.mtime;
-			return typeof m === 'number' && Number.isFinite(m) ? m : 0;
+			return typeof m === 'number' && Number.isFinite(m) ? m * 1000 : 0;
 		} catch {
 			return 0;
 		}
@@ -338,4 +386,17 @@ export async function move(src: string, dest: string): Promise<void> {
 /** Preview-harness seam: forget the whole virtual tree. */
 export function resetMemoryFs(): void {
 	tree.clear();
+}
+
+/** Create a directory (best-effort; no-op when it already exists). */
+export async function mkdir(path: string): Promise<void> {
+	if (isSwitch()) {
+		try {
+			Switch!.mkdirSync!(path);
+		} catch {
+			/* may already exist, or the runtime creates parents on write */
+		}
+		return;
+	}
+	walk(path, true);
 }

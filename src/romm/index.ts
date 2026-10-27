@@ -41,6 +41,11 @@ export type {
 	RommTitle,
 	LibrarySection,
 	GetGamesOptions,
+	RomRATag,
+	RomRAchievement,
+	RomRAEarnedAchievement,
+	RomRAGameProgression,
+	RomRAProgression,
 } from './types';
 export { groupTitles } from './group';
 export { normalizeBaseUrl, RommClient } from './client';

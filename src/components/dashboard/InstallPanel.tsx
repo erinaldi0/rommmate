@@ -45,6 +45,13 @@ export function InstallPanel({ state, msg, hero, pagerFocused }: Props) {
 					heading: 'INSTALL',
 					tone: 'accent',
 				};
+			case 'verifying':
+				return {
+					caption: 'Verifying checksum…',
+					bar: Math.min(1, Math.max(0, state.progress)),
+					heading: 'INSTALL',
+					tone: 'accent',
+				};
 			case 'ready':
 				return { caption: 'Installed', bar: 1, heading: 'INSTALLATION', tone: 'success' };
 			case 'stale':
@@ -57,7 +64,7 @@ export function InstallPanel({ state, msg, hero, pagerFocused }: Props) {
 	})();
 	const pct = Math.floor(installPhase.bar * 100);
 	const panelRight =
-		state.kind === 'installing' || installPhase.bar >= 1 || state.kind === 'not-installed'
+		state.kind === 'installing' || state.kind === 'verifying' || installPhase.bar >= 1 || state.kind === 'not-installed'
 			? `${pct}%${sizeText !== '' ? ` · ${sizeText}` : ''}`
 			: sizeText;
 	const caption = msg !== '' ? msg : installPhase.caption;

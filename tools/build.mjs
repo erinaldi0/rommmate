@@ -24,7 +24,7 @@ const stamp = new Date()
 	.replace(/[-:]/g, '')
 	.replace(/\..+/, 'Z');
 
-const buildId = `v0.13-${sha}${dirty}-${stamp}`;
+const buildId = `v0.19-${sha}${dirty}-${stamp}`;
 
 await build({
 	entryPoints: ['src/main.tsx'],
@@ -34,6 +34,12 @@ await build({
 	target: 'es2022',
 	format: 'esm',
 	outfile: 'romfs/main.js',
+	// The 7z-wasm binary is inlined (no fetch/locateFile at runtime — the
+	// home-brew NRO has no server to serve it from).
+	loader: {
+		'.wasm': 'binary',
+	},
+	 external: ['module'],
 	define: {
 		'process.env.NODE_ENV': '"production"',
 		__ROMMMATE_BUILD__: JSON.stringify(buildId),

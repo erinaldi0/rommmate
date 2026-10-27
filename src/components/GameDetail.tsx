@@ -26,7 +26,7 @@
  */
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Rect, useDimensions, useParent } from 'react-tela';
-import { colors, fontSize, radius } from '../theme';
+import { colors, fontSize, layout, radius } from '../theme';
 import { wrapLines } from '../text';
 import { useCanvasTap } from '../hooks/use-canvas-tap';
 import { useDirection, useGamepadButton } from '../hooks/use-gamepad';
@@ -39,8 +39,10 @@ import { localSaveFiles } from '../saves/inventory';
 import { formatBytes, primaryRow, stateChip as stateChipFor } from './dashboard/hero';
 import {
 	AmbientBackdrop,
+	Chip,
 	Button,
 	buttonSize,
+	chipWidth,
 	Field,
 	HintBar,
 	Keycap,
@@ -53,6 +55,7 @@ import {
 	type ProgressTone,
 } from './ui';
 import type { RommGame } from '../romm';
+import { raSummary, type RaGameView } from '../ra';
 
 interface Props {
 	game: RommGame;
@@ -64,6 +67,8 @@ interface Props {
 	onOpenDownloads?: () => void;
 	/** Open the disc picker (the Discs action). */
 	onDiscs?: () => void;
+	/** Open the achievements screen (the Achievements action, RA games only). */
+	onOpenAchievements?: () => void;
 	/** True while a screen over this one (the disc picker) owns the input. */
 	paused?: boolean;
 }
@@ -105,6 +110,11 @@ const SUMMARY_MAX = 24;
 const PRIMARY_Y = 576;
 const SECONDARY_Y = 520;
 const BTN_GAP = 12;
+/** Button heights from the Button primitive's geometry (md / lg). */
+const SEC_BTN_H = 44;
+const PRIMARY_BTN_H = 56;
+/** The vertical step one wrapped secondary line adds (button + row gap). */
+const SEC_ROW_H = SEC_BTN_H + BTN_GAP;
 
 /** RIGHT — the installation card. */
 const PANEL_X = 880;
@@ -120,13 +130,11 @@ const FACT_COL_GAP = 12;
 const FACT_ROW_H = 62;
 const RULE_2 = FACTS_Y + FACT_ROW_H + 26;
 const DISC_Y = RULE_2 + 28;
-const SAVES_Y_MULTI = DISC_Y + 62;
-const SAVES_Y_SINGLE = DISC_Y;
 
 /** The back affordance, top-left (the home screen's brand spot). */
 const BACK = { x: 24, y: 24, w: 26, hitW: 170, hitH: 44 };
 
-export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, paused = false }: Props) {
+export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, onOpenAchievements, paused = false }: Props) {
 	const dims = useDimensions();
 	const { ctx } = useParent();
 	const active = !paused;
@@ -196,9 +204,45 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 		};
 	}, [game.id, syncMsg]);
 
+	// ── the RetroAchievements view ─────────────────────────────────────
+	// The composed view (the published set + the user's progress, read
+	// through RomM). Only fetched for RA-matched games, and never in demo
+	// mode (there is no live RomM to read it from). The detail screen's
+	// badge and the "Achievements" action both read this.
+	const [raView, setRaView] = useState<RaGameView | null>(null);
+	const [raLoading, setRaLoading] = useState(false);
+	useEffect(() => {
+		setRaView(null);
+		if (state.kind === 'demo') return;
+		let cancelled = false;
+		setRaLoading(true);
+		void play.raGameView(game).then((v) => {
+			if (cancelled) return;
+			setRaView(v);
+			setRaLoading(false);
+		});
+		return () => {
+			cancelled = true;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [game.id]);
+
 	// ── the actions ────────────────────────────────────────────────────
 	const primary = primaryRow(game, state, (m) => setActMsg(m));
 	const secondary: SecondaryAction[] = [];
+	// Uninstall leads the row (top-left), the quieter actions follow: it is
+	// the one action the player hunts for, and leading the row keeps it on
+	// the top line when the row wraps, instead of dangling alone above the
+	// primary.
+	if (state.kind === 'ready' || state.kind === 'stale') {
+		secondary.push({
+			label: 'Uninstall',
+			variant: 'danger',
+			run: () => {
+				void play.uninstall(game).then((m) => setActMsg(m));
+			},
+		});
+	}
 	if (state.kind !== 'demo') {
 		secondary.push({
 			label: 'Sync saves',
@@ -218,26 +262,132 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 			},
 		});
 	}
+	// The RetroAchievements action: RA-matched games only, never in demo
+	// mode (the screen would have no live RomM to read from). `raView`
+	// is fetched below; `game.raId` alone isn't reliable because some
+	// servers don't report `ra_id` in the rom entry.
+	if (state.kind !== 'demo' && raView !== null && raView.official && onOpenAchievements !== undefined) {
+		secondary.push({ label: 'Achievements', variant: 'secondary', run: onOpenAchievements });
+	}
 	const multiDisc = disc !== undefined && disc.count > 1;
 	if (multiDisc && onDiscs !== undefined) {
 		secondary.push({ label: 'Discs', variant: 'secondary', run: onDiscs });
 	}
-	if (state.kind === 'ready' || state.kind === 'stale') {
-		secondary.push({
-			label: 'Uninstall',
-			variant: 'danger',
-			run: () => {
-				void play.uninstall(game).then((m) => setActMsg(m));
-			},
-		});
-	}
 
-	// The focus walk: 0 is the primary, 1.. are the secondaries.
+	// ── the action block's geometry ─────────────────────────────────────
+	// The secondary row, laid out left-to-right from the column with its
+	// A-keycap space always reserved (so it never re-flows on a focus move).
+	// When it overflows into the installation panel (PANEL_X) it wraps to
+	// lines below, so no action hides behind the panel.
+	const secWidths = secondary.map((row) => buttonSize(ctx, row.label, 'md', { keycap: 'A' }));
+	const secSlots: Array<{ x: number; row: number }> = [];
+	let secBx = COL_X;
+	let secRow = 0;
+	for (let i = 0; i < secondary.length; i++) {
+		if (secBx + secWidths[i] > PANEL_X - MARGIN) {
+			secBx = COL_X;
+			secRow += 1;
+		}
+		secSlots.push({ x: secBx, row: secRow });
+		secBx += secWidths[i] + BTN_GAP;
+	}
+	// The block is the secondary lines with the primary beneath them. Its
+	// height grows with each wrapped line, so pin the block's *bottom* to
+	// the hint bar's strip and let its top rise to make room: a wrapped
+	// line lifts the whole block instead of the primary overlapping the
+	// line it wraps to (or sinking into the strip). With nothing wrapped
+	// this lands every element exactly where the constants above put it, so
+	// the common case never moves.
+	const hintTop = dims.height - layout.hintBar.height;
+	const secBlockH = secondary.length > 0 ? secRow * SEC_ROW_H + SEC_BTN_H : 0;
+	const blockH = secBlockH + (secBlockH > 0 ? BTN_GAP : 0) + PRIMARY_BTN_H;
+	const anchorTop = secondary.length > 0 ? SECONDARY_Y : PRIMARY_Y;
+	const blockTop = anchorTop - Math.max(0, anchorTop + blockH - hintTop);
+	const secPositions = secSlots.map((slot) => ({ x: slot.x, y: blockTop + slot.row * SEC_ROW_H }));
+	const primaryY = blockTop + (secBlockH > 0 ? secBlockH + BTN_GAP : 0);
+	// The first/last secondary index of every line — the map the focus walk
+	// navigates with (see below).
+	const rowFirst: number[] = [];
+	const rowLast: number[] = [];
+	for (let i = 0; i < secondary.length; i++) {
+		const r = secSlots[i].row;
+		if (rowFirst[r] === undefined) rowFirst[r] = i;
+		rowLast[r] = i;
+	}
+	const rowCount = rowFirst.length;
+	// A primitive key for the line shape, so the direction handlers only
+	// re-register when the layout actually reflows.
+	const rowMapKey = secSlots.map((s) => s.row).join('.');
+
+	// The focus walk: 0 is the primary, 1.. are the secondaries. The
+	// directions walk the *visual* grid: Up/Down change lines (landing at
+	// the target line's left edge — so Up from the primary reaches the line
+	// directly above it, one line at a time, never skipping over a wrapped
+	// one), and Left/Right stay within a single line.
 	const buttons = 1 + secondary.length;
 	const focusClamped = Math.min(Math.max(0, focus), buttons - 1);
 
-	useDirection('Up', () => setFocus((f) => Math.max(0, f - 1)), [], active);
-	useDirection('Down', () => setFocus((f) => Math.min(buttons - 1, f + 1)), [buttons], active);
+	// Keep the focus index in range if the secondary list changes (the
+	// Discs action appears or disappears when the disc selection changes).
+	useEffect(() => {
+		setFocus((f) => Math.min(Math.max(0, f), buttons - 1));
+	}, [buttons]);
+
+	useDirection(
+		'Up',
+		() =>
+			setFocus((f) => {
+				// From the primary: the line directly above it, at its left
+				// edge. From a secondary: one line up, at that line's left
+				// edge — the top line has nothing above.
+				if (f === 0) return rowCount === 0 ? f : rowFirst[rowCount - 1] + 1;
+				const r = secSlots[f - 1].row;
+				return r === 0 ? f : rowFirst[r - 1] + 1;
+			}),
+		[buttons, rowMapKey],
+		active,
+	);
+	useDirection(
+		'Down',
+		() =>
+			setFocus((f) => {
+				// From the primary there is nothing below. From the bottom
+				// line: the primary. From a higher line: the line below, at
+				// its left edge.
+				if (f === 0) return f;
+				const r = secSlots[f - 1].row;
+				return r === rowCount - 1 ? 0 : rowFirst[r + 1] + 1;
+			}),
+		[buttons, rowMapKey],
+		active,
+	);
+	useDirection(
+		'Left',
+		() =>
+			setFocus((f) => {
+				// Walk the line left; the primary and each line's first
+				// button are left edges (a walk never leaks into the line
+				// above or below).
+				if (f === 0) return f;
+				const i = f - 1;
+				return i > rowFirst[secSlots[i].row] ? f - 1 : f;
+			}),
+		[buttons, rowMapKey],
+		active,
+	);
+	useDirection(
+		'Right',
+		() =>
+			setFocus((f) => {
+				// Walk the line right; the primary and each line's last
+				// button are right edges.
+				if (f === 0) return f;
+				const i = f - 1;
+				return i < rowLast[secSlots[i].row] ? f + 1 : f;
+			}),
+		[buttons, rowMapKey],
+		active,
+	);
 	useGamepadButton(
 		'A',
 		() => (focusClamped === 0 ? primary.run() : secondary[focusClamped - 1]?.run()),
@@ -288,8 +438,7 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 	// Wrapped for the biggest allowance the column can ever spend, then
 	// sliced to the space that is actually left: collapsed shows three
 	// deliberate lines, Y expands within the fitting space.
-	const actionsTop = secondary.length > 0 ? SECONDARY_Y : PRIMARY_Y;
-	const descBottom = actionsTop - 20;
+	const descBottom = blockTop - 20;
 	const summaryBudget = wrapLines(ctx, game.summary, COL_W, SUMMARY_MAX, fontSize.body);
 	const summaryFit = Math.max(DESC_COLLAPSED, Math.floor((descBottom - descTop) / DESC_LINE_H));
 	const summaryShown = Math.min(expanded ? summaryFit : DESC_COLLAPSED, summaryBudget.length);
@@ -297,15 +446,18 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 	useGamepadButton('Y', () => setExpanded((e) => !e), [summaryFit, summaryBudget.length], active);
 
 	// ── the installation card's model (home's InstallPanel vocabulary) ─
-	const sizeText = formatBytes(game.sizeBytes);
+	// The size the queue knows while/after the download wins over the
+	// library entry's number: the queue corrects it to the size the server
+	// actually vouches for, and the entry can be stale (a re-scanned file).
+	const sizeText = formatBytes(queueItem !== undefined && queueItem.size > 0 ? queueItem.size : game.sizeBytes);
 	const installBar =
-		state.kind === 'installing'
+		state.kind === 'installing' || state.kind === 'verifying'
 			? Math.min(1, Math.max(0, state.progress))
 			: state.kind === 'ready'
 				? 1
 				: 0;
 	const installTone: ProgressTone =
-		state.kind === 'installing'
+		state.kind === 'installing' || state.kind === 'verifying'
 			? 'accent'
 			: state.kind === 'ready'
 				? 'success'
@@ -318,25 +470,34 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 				? queueItem.error
 				: 'download failed'
 			: '';
+	// A finished download that observed the file is not the size the library
+	// entry listed: the install succeeded, and the card says so in warning
+	// tone instead of a bare "Installed" the size would contradict.
+	const queueNote =
+		queueItem !== undefined && queueItem.status === 'done' ? queueItem.note : '';
 	const phaseText =
 		state.kind === 'installing'
 			? queueItem?.status === 'queued'
 				? 'Waiting in queue'
 				: 'Downloading…'
-			: state.kind === 'ready'
-				? 'Installed'
-				: state.kind === 'stale'
-					? 'Outdated on server'
-					: state.kind === 'not-installed'
-						? 'Ready to begin'
-						: 'Unavailable';
+			: state.kind === 'verifying'
+				? 'Verifying…'
+				: state.kind === 'ready'
+					? 'Installed'
+					: state.kind === 'stale'
+						? 'Outdated on server'
+						: state.kind === 'not-installed'
+							? 'Ready to begin'
+							: 'Unavailable';
 	// A live failure explains itself over the older messages; otherwise the
 	// last confirmed outcome wins until the game changes (home's rule).
-	const installCaption = installError !== '' ? installError : actMsg !== '' ? actMsg : phaseText;
+	const installCaption =
+		installError !== '' ? installError : queueNote !== '' ? queueNote : actMsg !== '' ? actMsg : phaseText;
 	const captionDanger = installError !== '' || /fail|missing|error|no /i.test(actMsg);
+	const captionWarn = installError === '' && queueNote !== '';
 	const pct = Math.floor(installBar * 100);
 	const panelRight =
-		state.kind === 'installing' || installBar >= 1 || state.kind === 'not-installed'
+		state.kind === 'installing' || state.kind === 'verifying' || installBar >= 1 || state.kind === 'not-installed'
 			? `${pct}%${sizeText !== '' ? ` · ${sizeText}` : ''}`
 			: sizeText;
 
@@ -374,7 +535,20 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 	// ── the panel's geometry (the blocks that exist decide its height) ─
 	const innerX = PANEL_X + PANEL_PAD;
 	const innerW = PANEL_W - PANEL_PAD * 2;
-	const savesY = multiDisc ? SAVES_Y_MULTI : SAVES_Y_SINGLE;
+	// The block order below the facts: the disc position (multi-disc only),
+	// the RetroAchievements row (RA-matched only), then save sync.
+	const showRa = raView !== null && raView.official;
+	const raY = DISC_Y + (multiDisc ? 62 : 0);
+	const raValue = raLoading
+		? 'loading…'
+		: raView === null
+			? state.kind === 'demo'
+				? 'demo mode'
+				: 'unavailable'
+			: raView.official
+				? raSummary(raView) || `${raView.earned ?? 0} / ${raView.total}`
+				: 'no published set yet';
+	const savesY = raY + (showRa ? 62 : 0);
 	const panelH = savesY + 44 - PANEL_Y;
 
 	// ── hints ──────────────────────────────────────────────────────────
@@ -392,10 +566,6 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 	if (clamped) hints.push(expanded ? 'Y less' : 'Y details');
 	if (onOpenDownloads !== undefined) hints.push('X downloads');
 	hints.push('B back');
-
-	// The secondary row: widths from the button primitive, the A-keycap's
-	// space always reserved so the row never re-flows on a focus move.
-	const secWidths = secondary.map((row) => buttonSize(ctx, row.label, 'md', { keycap: 'A' }));
 
 	return (
 		<>
@@ -555,6 +725,20 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 				state reads identically on both screens. */}
 			<StatusChip x={COL_X} y={chipY} text={stateChip.text} tone={stateChip.tone ?? 'neutral'} />
 
+			{/* The RetroAchievements badge: this game is matched to an
+				official RA set (a cheap signal from the list walk). It sits
+				right of the status pill; the progress summary lives in the
+				fact panel so the badge stays a quiet, constant mark. */}
+			{raView !== null && raView.official && (
+				<Chip
+					x={COL_X + chipWidth(ctx, stateChip.text, 'md') + 12}
+					y={chipY}
+					text={raView !== null && raView.official && (raView.earned ?? 0) > 0 ? `RetroAchievements ${raView.earned}/${raView.total}` : 'RetroAchievements'}
+					tone="accent"
+					size="md"
+				/>
+			)}
+
 			{/* ── CENTER: the description ─────────────────────────────── */}
 			{summaryBudget.length === 0 ? (
 				<Text x={COL_X} y={descTop} variant="body" color={colors.textFaint}>
@@ -588,7 +772,7 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 			{/* ── CENTER: the actions ─────────────────────────────────── */}
 			<Button
 				x={COL_X}
-				y={PRIMARY_Y}
+				y={primaryY}
 				width={COL_W}
 				label={primary.label}
 				variant="primary"
@@ -600,15 +784,13 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 				onPress={primary.enabled ? primary.run : undefined}
 			/>
 			{(() => {
-				let bx = COL_X;
 				return secondary.map((row, i) => {
-					const x = bx;
-					bx += secWidths[i] + BTN_GAP;
+					const { x, y } = secPositions[i];
 					return (
 						<Button
 							key={row.label}
 							x={x}
-							y={SECONDARY_Y}
+							y={y}
 							width={secWidths[i]}
 							label={row.label}
 							variant={row.variant}
@@ -632,7 +814,7 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 				label={state.kind === 'installing' ? 'INSTALL' : 'INSTALLATION'}
 				right={panelRight}
 				caption={installCaption}
-				captionColor={captionDanger ? colors.danger : undefined}
+				captionColor={captionDanger ? colors.danger : captionWarn ? colors.warning : undefined}
 			/>
 			<Rect x={innerX} y={RULE_1} width={innerW} height={1} fill={colors.border} pointerEvents={false} />
 
@@ -658,6 +840,25 @@ export function GameDetail({ game, onBack, disc, onOpenDownloads, onDiscs, pause
 					y={DISC_Y}
 					label="DISC"
 					value={`Disc ${disc.index + 1} of ${disc.count}`}
+					width={innerW}
+					valueSize={fontSize.small}
+				/>
+			)}
+
+			{/* The RetroAchievements row: the game's published set and the
+				user's progress on it (read through RomM). Earned points
+				read as success; a fresh or unlinked account stays neutral. */}
+			{showRa && (
+				<Field
+					x={innerX}
+					y={raY}
+					label="RETROACHIEVEMENTS"
+					value={raValue}
+					valueColor={
+						raView !== null && raView.official && (raView.earnedPoints ?? 0) > 0
+							? colors.success
+							: undefined
+					}
 					width={innerW}
 					valueSize={fontSize.small}
 				/>

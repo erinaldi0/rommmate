@@ -44,7 +44,7 @@ export function networkStatus(): NetStatus {
 
 /**
  * Turn the raw transport error into something actionable for the status
- * line. The unmodified error is always in `sdmc:/switch/rommate.log`.
+ * line. The unmodified error is always in `sdmc:/switch/rommmate/rommate.log`.
  */
 export function friendlyNetworkError(raw: string): string {
 	if (/address family/i.test(raw)) {

@@ -1,7 +1,7 @@
 /**
  * The Play service: the single object the UI talks to for everything the
  * detail screen's action rows do (install / play / sync / uninstall) and
- * for the boot-time work (pending-session ingest, auto sync, doctor).
+ * for the boot-time work (pending-session ingest, auto sync).
  *
  * It is a process-wide singleton (like the download queue) with a tiny
  * external store: React screens subscribe with `useSyncExternalStore` and
@@ -21,14 +21,11 @@ import {
 	type CoreChoice,
 } from './retroarch/cores';
 import {
-	ensureCore,
-	ensureEmulator,
 	ensureReadyFor,
 	findToolingPlatform,
 	listToolingFiles,
 	type ToolingFile,
 } from './retroarch/emulator';
-import { sdFreeSpace } from './fs';
 import { installGame, uninstallGame, onManifestChanged } from './roms/install';
 import { downloadQueue } from './roms/download';
 import {
@@ -43,8 +40,9 @@ import { PATHS, platformSlug } from './retroarch/layout';
 import { launchRetroArch } from './launch';
 import { setActivity } from './activity';
 import type { Config } from './config';
-import type { RommClient, RommGame } from './romm';
-import { getFirmware, getDevices } from './romm/play';
+import type { RommClient, RommGame, RomRAchievement, RomRATag } from './romm';
+import { buildRaGameView, type RaGameView } from './ra';
+import { exists } from './fs';
 
 /** The UI-facing state of one game's Play capability. */
 export type PlayState =
@@ -52,22 +50,9 @@ export type PlayState =
 	| { kind: 'unsupported' }
 	| { kind: 'not-installed'; sizeBytes: number }
 	| { kind: 'installing'; progress: number }
+	| { kind: 'verifying'; progress: number }
 	| { kind: 'ready' }
 	| { kind: 'stale' };
-
-/** One checklist line for the setup/doctor screen. */
-export interface DoctorRow {
-	label: string;
-	ok: boolean;
-	/** Shown when not ok (what to do about it). */
-	note: string;
-}
-
-export interface DoctorReport {
-	rows: DoctorRow[];
-	/** True when there is anything to fix. */
-	needsWork: boolean;
-}
 
 class PlayService {
 	#manifest: Manifest | null = null;
@@ -86,6 +71,13 @@ class PlayService {
 	#queueUnsub: (() => void) | null = null;
 	/** The last sync report (for the status line). */
 	lastReport: SyncReport | null = null;
+	/**
+	 * The user's RA identity + progression (from RomM), cached per bind.
+	 * Null = not fetched yet, or the user has no linked RA account.
+	 */
+	#raTag: RomRATag | null = null;
+	/** Per-game published achievement sets, cached by rom id. */
+	#raCache = new Map<number, RomRAchievement[]>();
 
 	// ── the external store ──────────────────────────────────────────────
 
@@ -119,6 +111,8 @@ class PlayService {
 		this.#bootSyncDone = false;
 		this.#toolingClient = null;
 		this.#toolingCache = null;
+		this.#raTag = null;
+		this.#raCache.clear();
 		this.lastReport = null;
 		this.#manifest = await loadManifest();
 		for (const game of this.#games.values()) {
@@ -177,6 +171,7 @@ class PlayService {
 			prev === undefined ||
 			prev.kind !== next.kind ||
 			(prev.kind === 'installing' && next.kind === 'installing' && prev.progress !== next.progress) ||
+			(prev.kind === 'verifying' && next.kind === 'verifying' && prev.progress !== next.progress) ||
 			(prev.kind === 'not-installed' && next.kind === 'not-installed' && prev.sizeBytes !== next.sizeBytes)
 		) {
 			this.#states.set(romId, next);
@@ -192,7 +187,8 @@ class PlayService {
 			if (
 				prev === undefined ||
 				prev.kind !== next.kind ||
-				(prev.kind === 'installing' && next.kind === 'installing' && prev.progress !== next.progress)
+				(prev.kind === 'installing' && next.kind === 'installing' && prev.progress !== next.progress) ||
+				(prev.kind === 'verifying' && next.kind === 'verifying' && prev.progress !== next.progress)
 			) {
 				this.#states.set(romId, next);
 			}
@@ -202,16 +198,42 @@ class PlayService {
 
 	/** Derive the state (without caching). */
 	#derive(romId: number): PlayState {
-		if (this.#client === null) return { kind: 'demo' };
-		const game = this.#games.get(romId) ?? null;
 		const manifest = this.#manifest;
 
-		// A download in flight for this rom wins the display.
+		// No server client bound: if the ROM is installed locally we can
+		// still play it offline. Derive from the manifest instead of
+		// showing "demo mode" for every game.
+		if (this.#client === null && manifest !== null) {
+			const entry = manifest.roms[String(romId)];
+			if (entry !== undefined && entry.files.length > 0) {
+				if (entry.outdated) return { kind: 'stale' };
+				return { kind: 'ready' };
+			}
+			return { kind: 'not-installed', sizeBytes: 0 };
+		}
+
+		if (this.#client === null) return { kind: 'demo' };
+		const game = this.#games.get(romId) ?? null;
+
+		// A download in flight for this rom wins the display. While the
+		// finished part is being hashed the phase is "verifying"; once the
+		// hash matches the part is committed and the game flips to "ready".
 		const running = downloadQueue
 			.getItems()
 			.find((v) => v.id.startsWith(`rom:${romId}:`) && (v.status === 'running' || v.status === 'queued'));
 		if (running !== undefined) {
+			if (running.phase === 'verifying') {
+				return { kind: 'verifying', progress: running.verifyProgress };
+			}
 			return { kind: 'installing', progress: running.progress };
+		}
+
+		// A failed transfer (hash mismatch, unreadable part, …) takes
+		// priority over the manifest state: don't show "Outdated on server"
+		// when the real problem is a verification error.
+		const errored = downloadQueue.getItems().find((v) => v.id.startsWith(`rom:${romId}:`) && v.status === 'error');
+		if (errored !== undefined) {
+			return { kind: 'not-installed', sizeBytes: game?.sizeBytes ?? 0 };
 		}
 
 		if (game !== null && !isEmulablePlatform(game.platform)) {
@@ -255,7 +277,7 @@ class PlayService {
 	 */
 	async play(game: RommGame): Promise<string> {
 		const { client, manifest } = this.#context();
-		if (client === null || manifest === null) {
+		if (manifest === null) {
 			return 'play needs a RomM server (demo mode has none)';
 		}
 		this.#games.set(game.id, game);
@@ -265,16 +287,29 @@ class PlayService {
 			return 'install the rom first';
 		}
 
-		const tooling = await this.#toolingFiles(client);
-		const ready = await ensureReadyFor(
-			client,
-			manifest,
-			game.platform,
-			game.platformId,
-			tooling,
-			this.#choiceFor(game.platform),
-		);
-		if (!ready.ok) return ready.error;
+		// With a server client, provision core + emulator first (they may
+		// be missing or stale). Offline, trust what's already installed:
+		// the core and the loader must both be in the manifest.
+		if (client !== null) {
+			const tooling = await this.#toolingFiles(client);
+			const ready = await ensureReadyFor(
+				client,
+				manifest,
+				game.platform,
+				game.platformId,
+				tooling,
+				this.#choiceFor(game.platform),
+				this.#config,
+			);
+			if (!ready.ok) return ready.error;
+		} else {
+			const core = manifest.cores[platformSlug(game.platform)];
+			if (core === undefined) return 'no core installed for this platform';
+			const emulator = manifest.emulator;
+			if (emulator === null || !(await exists(emulator.path))) {
+				return 'RetroArch loader not installed — connect to the server once';
+			}
+		}
 
 		const core = manifest.cores[platformSlug(game.platform)];
 		if (core === undefined) return 'no core installed for this platform';
@@ -304,11 +339,66 @@ class PlayService {
 		this.#recomputeAll();
 		if (report.error !== '') return report.error;
 		const bits: string[] = [];
-		if (report.uploaded > 0) bits.push(`↑ ${report.uploaded}`);
-		if (report.downloaded > 0) bits.push(`↓ ${report.downloaded}`);
+		if (report.uploaded > 0) bits.push(`${report.uploaded} up`);
+		if (report.downloaded > 0) bits.push(`${report.downloaded} down`);
 		if (report.states > 0) bits.push(`${report.states} states`);
 		if (report.conflicts > 0) bits.push(`${report.conflicts} conflicts`);
 		return bits.length > 0 ? `synced: ${bits.join(' · ')}` : 'everything up to date';
+	}
+
+	/**
+	 * The user's RA identity + progression (from RomM, cached per bind).
+	 * Null in demo mode, or when the user has not linked an RA account in
+	 * RomM (a pre-5.x server has no RA routes either).
+	 */
+	async raTag(): Promise<RomRATag | null> {
+		const { client } = this.#context();
+		if (client === null) return null;
+		if (this.#raTag !== null) return this.#raTag;
+		this.#raTag = await client.getRaTag();
+		return this.#raTag;
+	}
+
+	/**
+	 * Re-pull the user's RA progress from RetroAchievements (best-effort).
+	 * The achievements screen calls this first, so progress earned inside
+	 * RetroArch shows up rather than a stale RomM snapshot.
+	 */
+	async refreshRa(): Promise<void> {
+		const { client } = this.#context();
+		if (client === null) return;
+		const tag = await this.raTag();
+		if (tag === null || tag.userId <= 0) return;
+		this.#raTag = null;
+		await client.refreshRa(tag.userId);
+		this.#raTag = await client.getRaTag();
+	}
+
+	/**
+	 * The composed RA view for one game (the badge + achievements screen
+	 * render from it). Reads the published set on demand and joins the user's
+	 * progress by RA id. Returns null in demo mode or when the rom is not
+	 * matched to an RA game (nothing to show).
+	 */
+	async raGameView(game: RommGame): Promise<RaGameView | null> {
+		const { client } = this.#context();
+		if (client === null) return null;
+		// Fetch the achievement set regardless of `raId`: some servers
+		// don't include `ra_id` in the rom entry, so a game can have RA
+		// achievements even when `raId` is 0. `buildRaGameView` derives
+		// `official` from the set itself, not from `raId`.
+
+		let set = this.#raCache.get(game.id);
+		if (set === undefined) {
+			const fetched = await client.getGameRaAchievements(game.id);
+			if (fetched === null) return null; // a hard fetch failure: show nothing
+			set = fetched;
+			this.#raCache.set(game.id, set);
+		}
+		const tag = await this.raTag();
+		const progression =
+			tag?.progression?.results.find((r) => r.romRaId === game.raId) ?? null;
+		return buildRaGameView(game.raId, set, progression);
 	}
 
 	/** Uninstall a game's files (saves are kept — they belong to the server). */
@@ -337,162 +427,6 @@ class PlayService {
 			await ingestPendingSession(client, manifest);
 		}
 		await runSaveSync(client, manifest);
-	}
-
-	/**
-	 * The setup/doctor check: one row per prerequisite, with a note on
-	 * what to do when it is not met.
-	 *
-	 * @param platforms the library's platforms (name + server id).
-	 */
-	async doctor(platforms: Array<{ name: string; id: number }>): Promise<DoctorReport> {
-		const { client } = this.#context();
-		const rows: DoctorRow[] = [];
-
-		if (client === null) {
-			return {
-				rows: [
-					{
-						label: 'RomM server',
-						ok: false,
-						note: 'demo mode — connect a server to use play',
-					},
-				],
-				needsWork: true,
-			};
-		}
-
-		// 1. The sync routes (device registration is the gatekeeper).
-		const devices = await getDevices(client);
-		rows.push(
-			devices !== null
-				? { label: 'Save sync (5.x routes)', ok: true, note: '' }
-				: {
-						label: 'Save sync (5.x routes)',
-						ok: false,
-						note: 'this server predates sync — saves will not be saved',
-					},
-		);
-
-		// 2. The tooling platform + loader.
-		const platform = await findToolingPlatform(client);
-		const files = platform === null ? [] : await listToolingFiles(client, platform.id);
-		this.#toolingClient = client;
-		this.#toolingCache = files;
-
-		rows.push(
-			platform === null
-				? {
-						label: 'RetroArch platform',
-						ok: false,
-						note: 'create a "RetroArch" platform in the RomM web UI',
-					}
-				: { label: 'RetroArch platform', ok: true, note: '' },
-		);
-
-		const loader = files.find((f) => /retroarch/i.test(f.fileName) && /\.(zip|nro)$/i.test(f.fileName));
-		rows.push(
-			loader === undefined
-				? {
-						label: 'RetroArch loader',
-						ok: false,
-						note: 'upload the RetroArch NRO (or a zip of switch/) to it',
-					}
-				: { label: 'RetroArch loader', ok: true, note: loader.fileName },
-		);
-
-		// 3. One core row per emulable platform the library actually has.
-		const seen = new Set<string>();
-		for (const p of platforms) {
-			const entry = coreEntryFor(p.name);
-			if (entry === null || seen.has(entry.display)) continue;
-			seen.add(entry.display);
-			const choice = this.#choiceFor(p.name);
-			const onServer = files.some((f) => choiceMatches(choice, f.fileName));
-			const installed =
-				this.#manifest?.cores[platformSlug(p.name)] !== undefined;
-			rows.push(
-				onServer || installed
-					? { label: `Core: ${entry.display}`, ok: true, note: choice.label }
-					: {
-							label: `Core: ${entry.display}`,
-							ok: false,
-							note: `upload the ${choice.label} core NRO to the RetroArch platform`,
-						},
-			);
-			// 4. BIOS for the platforms that need one.
-			if (entry.bios.length > 0 && p.id > 0) {
-				const fw = await getFirmware(client, p.id);
-				const have = fw !== null && fw.length > 0;
-				const biosOk =
-					have && Object.keys(this.#manifest?.bios ?? {}).length > 0;
-				rows.push(
-					have
-						? { label: `BIOS: ${entry.display}`, ok: biosOk, note: biosOk ? '' : 'downloads on first play' }
-						: {
-								label: `BIOS: ${entry.display}`,
-								ok: false,
-								note: `upload a BIOS (e.g. ${entry.bios[0]}) in RomM's firmware section`,
-							},
-				);
-			}
-		}
-
-		// 5. SD free space (informational; a warning, not a blocker).
-		const free = sdFreeSpace();
-		rows.push(
-			free === null
-				? { label: 'SD free space', ok: true, note: 'unknown (browser preview)' }
-				: {
-						label: 'SD free space',
-						ok: free > 512 * 1024 * 1024,
-						note: `${(free / 1024 / 1024 / 1024).toFixed(1)} GB free`,
-					},
-		);
-
-		return { rows, needsWork: rows.some((r) => !r.ok) };
-	}
-
-	/**
-	 * Download everything the doctor found missing: the loader, every core
-	 * the installed games need, and the BIOS for the platforms that use one.
-	 * The queue streams the rest; the doctor screen reports the outcome.
-	 */
-	async fix(): Promise<string> {
-		const { client } = this.#context();
-		const manifest = this.#manifest;
-		if (client === null || manifest === null) return 'nothing to fix (no server)';
-
-		const emulator = await ensureEmulator(client, manifest);
-		if (!emulator.ok) return emulator.error;
-
-		const tooling = await this.#toolingFiles(client);
-		const wanted = new Map<string, RommGame>();
-		for (const game of this.#games.values()) {
-			const slug = platformSlug(game.platform);
-			if (!wanted.has(slug)) wanted.set(slug, game);
-		}
-		let fixed = 0;
-		let skipped = 0;
-		for (const game of wanted.values()) {
-			const entry = coreEntryFor(game.platform);
-			if (entry === null) continue;
-			const choice = this.#choiceFor(game.platform);
-			const result = await ensureCore(
-				client,
-				manifest,
-				game.platform,
-				choice,
-				tooling,
-			);
-			if (result.ok) fixed += 1;
-			else skipped += 1; // a core the server does not have is reported, not fatal
-		}
-		return skipped > 0
-			? `fetched ${fixed} piece${fixed === 1 ? '' : 's'} — ${skipped} missing on the server`
-			: fixed > 0
-			  ? `fetched ${fixed} piece${fixed === 1 ? '' : 's'}`
-			  : 'everything already in place';
 	}
 
 	// ── internals ─────────────────────────────────────────────────────────
@@ -527,11 +461,6 @@ let storeVersion = 0;
 function notify(): void {
 	storeVersion += 1;
 	for (const listener of storeListeners) listener();
-}
-
-/** Does a file name match a core choice? (re-export of the core-map rule) */
-function choiceMatches(choice: CoreChoice, fileName: string): boolean {
-	return choice.match.test(fileName);
 }
 
 /** The process-wide service. */

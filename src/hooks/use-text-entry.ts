@@ -26,8 +26,20 @@ import { getVirtualKeyboard, virtualKeyboardError } from '../vk';
 import { forceResumeGamepadLoop, useGamepadEscape } from './use-gamepad';
 import type { KeyboardMode } from '../config';
 
-/** One editable settings field. */
-export type Field = 'baseUrl' | 'token' | 'username' | 'password' | 'pairingCode';
+/**
+ * One editable settings field. The connection fields are the settings
+ * screen's; the `ra*` fields are the RetroAchievements screen's — the same
+ * hook (system keyboard, its failure modes, the built-in fallback) serves
+ * both, so the union spans all of them.
+ */
+export type Field =
+	| 'baseUrl'
+	| 'token'
+	| 'username'
+	| 'password'
+	| 'pairingCode'
+	| 'raUsername'
+	| 'raPassword';
 
 export interface TextEntryOptions {
 	/** The Keyboard row's mode (auto → system → built-in); `builtin` skips the system keyboard. */

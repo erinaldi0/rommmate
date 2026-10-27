@@ -44,7 +44,7 @@ import { saveFocus, takeFocus } from '../lib/focus-memory';
 import { BUILD_ID } from '../version';
 import { measure } from '../text';
 import { DashboardHeader } from './DashboardHeader';
-import { AmbientBackdrop, EmptyState, ErrorState, FocusRing, HintBar, LoadingState, Text } from './ui';
+import { AmbientBackdrop, EmptyState, ErrorState, FocusRing, HintBar, ProgressBar, Spinner, Text } from './ui';
 import { play, usePlayState } from '../play';
 import { buildHero, heroForTile, primaryRow } from './dashboard/hero';
 import {
@@ -74,6 +74,8 @@ interface Props {
 	status: string;
 	/** True while the connection (and its background walk) is in flight. */
 	busy: boolean;
+	/** Progress of the in-flight library walk (loaded / total roms). */
+	progress: { loaded: number; total: number | null };
 	/** True while the library shows mocked data instead of a real RomM server. */
 	demo?: boolean;
 	/** The whole library, grouped into titles. */
@@ -103,6 +105,7 @@ interface Props {
 export function LibrarySections({
 	status,
 	busy,
+	progress,
 	demo = false,
 	titles,
 	favoriteTitles,
@@ -670,15 +673,46 @@ export function LibrarySections({
 				onSettings={onBack}
 			/>
 
-			{/* ── the loading / empty / error states ─────────────────── */}
-			{empty &&
-				(busy ? (
-					<LoadingState
-						label="Connecting to RomM…"
-						detail={status !== '' && status !== 'Connecting…' ? status : 'Loading your library'}
-						centerY={ROWS_Y + 150}
+			{/* ── the loading page (covers the screen while the walk runs) ── */}
+			{busy && (
+				<>
+					<AmbientBackdrop width={dims.width} height={dims.height} />
+					<Spinner x={dims.width / 2} y={dims.height / 2 - 90} />
+					<Text
+						x={dims.width / 2}
+						y={dims.height / 2 - 20}
+						variant="title"
+						align="center"
+						baseline="middle"
+						color={colors.textPrimary}
+					>
+						Updating library…
+					</Text>
+					<ProgressBar
+						x={dims.width / 2 - 260}
+						y={dims.height / 2 + 20}
+						width={520}
+						height={8}
+						value={progress.total !== null ? progress.loaded / progress.total : 0}
+						tone="accent"
+						label="LIBRARY"
+						right={
+							progress.total !== null
+								? `${Math.round((progress.loaded / progress.total) * 100)}%`
+								: `${progress.loaded}+`
+						}
+						caption={
+							progress.total !== null
+								? `${progress.loaded} / ${progress.total} roms`
+								: `${progress.loaded} roms`
+						}
 					/>
-				) : !demo && statusFailed ? (
+				</>
+			)}
+
+			{/* ── the loading / empty / error states ─────────────────── */}
+			{!busy && empty &&
+				(!demo && statusFailed ? (
 					<ErrorState title="Connection failed" detail={status} centerY={ROWS_Y + 170} />
 				) : (
 					<EmptyState

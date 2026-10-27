@@ -34,6 +34,28 @@ const ROW_H = 58;
 /** How many rows fit in the panel before it scrolls. */
 const MAX_ROWS = 8;
 
+/**
+ * The tail of a file name that remains once the release name is stripped —
+ * the `(Disc 2)` tag. An identified release hands every disc the same
+ * *name*, so the name identifies nothing and the row must show the tag
+ * instead; '' when the file name adds nothing to the release name.
+ *
+ * The archive/media extension is not news (`(Disc 2).zip` → `(Disc 2)`),
+ * and the short tail is what the row's narrow label column can actually
+ * show: the whole file name would ellipsis away the very marker we are
+ * after.
+ */
+const TRAILING_EXT = /\.(zip|7z|rar|iso|bin|cbs|mdf|nrg|cue|lst|gba|sfc|nes|smc|n64|v64|chd)$/i;
+function nameMarker(titleName: string, fsName: string): string {
+	if (titleName === '' || fsName === '') return '';
+	const tn = titleName.trim();
+	const fn = fsName.trim();
+	const t = tn.toLowerCase();
+	const f = fn.toLowerCase();
+	if (f.length <= t.length || f.indexOf(t) !== 0) return '';
+	return fn.slice(t.length).trim().replace(TRAILING_EXT, '');
+}
+
 export function DiscPicker({ title, initial, onPick, onClose }: Props) {
 	const dims = useDimensions();
 	const { ctx } = useParent();
@@ -99,7 +121,21 @@ export function DiscPicker({ title, initial, onPick, onClose }: Props) {
 				if (i < view || i >= view + visibleRows) return null;
 				const rowY = panelY + 84 + (i - view) * ROW_H;
 				const isFocus = i === focus;
-				const label = disc.name || disc.fsName || `Disc ${i + 1}`;
+				// When every disc wears the release's name (identification
+				// does), the name identifies nothing: the file name's
+				// trailing tag — "(Disc 2)" — is what the row shows. A
+				// distinguishing name (a manual rename) always wins.
+				const marker = nameMarker(title.name, disc.fsName);
+				const label =
+					disc.name !== '' && disc.name !== title.name
+						? disc.name
+						: marker !== ''
+							? marker
+							: disc.name !== ''
+								? disc.name
+								: disc.fsName !== ''
+									? disc.fsName
+									: `Disc ${i + 1}`;
 				const isMain = i === title.mainIndex;
 				return (
 					<React.Fragment key={disc.id || i}>

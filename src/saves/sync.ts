@@ -43,13 +43,14 @@ import type { RommClient } from '../romm';
 import { saveManifest, type Manifest } from '../manifest';
 import { ensureDevice } from './device';
 import { localSaveFiles, type LocalSaveFile } from './inventory';
-import { baseNameOf, platformSlug, PATHS } from '../retroarch/layout';
+import { baseNameOf, platformSlug, PATHS, saveDirFor, stateDirFor } from '../retroarch/layout';
 import { emulatorNameForCoreFile } from '../retroarch/cores';
 import {
 	appendBinary,
 	exists,
 	fileMtime,
 	fileSize,
+	mkdir,
 	move,
 	readBinary,
 	readText,
@@ -225,14 +226,17 @@ export async function runSaveSync(
 	// The negotiate scope (see the module comment): the local saves' roms,
 	// plus every installed rom — a server save for an installed rom that
 	// this console lacks is a download, not nothing. A per-game sync
-	// (options.romIds) keeps its scope on the requested roms only.
+	// (options.romIds) keeps its scope on the requested roms only — those
+	// are always included even when the game isn't installed yet, because
+	// `restoreUnlisted` asks the server to offer saves for roms we don't
+	// have locally.
 	const localRomIds = [...new Set([...saves, ...states].map((f) => f.romId))];
 	const installedRomIds = [...new Set(Object.values(manifest.roms).map((r) => r.romId))];
 	const romIds = [
 		...new Set(
 			scope === undefined
 				? [...localRomIds, ...installedRomIds]
-				: [...localRomIds, ...installedRomIds.filter((id) => scope.includes(id))],
+				: [...localRomIds, ...installedRomIds.filter((id) => scope.includes(id)), ...scope],
 		),
 	].slice(0, 500); // the server's per-request cap
 	const statesRomIds = [...new Set(states.map((s) => s.romId))];
@@ -244,9 +248,10 @@ export async function runSaveSync(
 	}
 
 	// ── negotiate ─────────────────────────────────────────────────────────
+	// The saves route may still exist on a server without devices:
+	// a missing negotiate then falls back to a plain list comparison
+	// below (upload-only sync).
 	if (deviceId === null) {
-		// The saves route may still exist on a server without devices:
-		// fall back to a plain list comparison below (upload-only sync).
 		report.error = 'this server has no device registration — sync is limited';
 	}
 
@@ -262,7 +267,15 @@ export async function runSaveSync(
 							slot: f.slot,
 							emulator: emulatorFor(manifest, f.romId),
 							contentHash: f.hash === '' ? null : f.hash,
-							updatedAt: f.mtime > 0 ? new Date(f.mtime).toISOString() : '',
+							// The schema REQUIRES a datetime: an empty string
+							// is a 422 that sinks the whole negotiate ("sync
+							// negotiation failed — uploads only"). A file
+							// whose mtime could not be read sends the 1970
+							// epoch — a valid datetime that honestly means
+							// "unknown" and can never win a newest-wins
+							// comparison.
+							updatedAt:
+								f.mtime > 0 ? new Date(f.mtime).toISOString() : '1970-01-01T00:00:00.000Z',
 							sizeBytes: f.size,
 						})),
 						romIds,
@@ -280,18 +293,14 @@ export async function runSaveSync(
 				)
 			: null;
 
-	if (deviceId === null || negotiated === null) {
-		if (deviceId === null && negotiated === null) {
-			// Pre-5.x server: no sync at all.
-			if (report.error === '') {
-				report.error = 'this server predates save sync';
-			}
-			activity(null);
-			return report;
-		}
-		// A device exists but negotiate failed: fall through to a plain
-		// list-diff upload-only sync rather than losing the user's saves.
-		report.error = report.error !== '' ? report.error : 'sync negotiation failed — uploads only';
+	// A failed negotiate is NOT fatal: fall through to the plain
+	// list-diff upload-only sync below so the user's saves still reach
+	// the server (the earlier `return` on this case made the fallback
+	// dead code and "uploads only" a lie — nothing was ever pushed).
+	// A device route is always present when negotiate ran, so the error
+	// slot is empty exactly in the negotiate-failed case.
+	if (negotiated === null && report.error === '') {
+		report.error = 'sync negotiation failed — uploads only';
 	}
 
 	// ── execute the negotiated operations ─────────────────────────────────
@@ -435,8 +444,9 @@ export async function runSaveSync(
 			await execute(op);
 		}
 		await completeSyncSession(client, negotiated.sessionId, signal);
-	} else if (deviceId === null) {
-		// Upload-only fallback (pre-5.x): push whatever changed.
+	} else {
+		// Upload-only fallback (no negotiate: pre-5.x server, or the
+		// negotiate call failed): push whatever changed.
 		for (const f of saves) {
 			if (signal?.aborted) break;
 			if (!f.changed && f.hash !== '') continue;
@@ -451,7 +461,9 @@ export async function runSaveSync(
 					slot: f.slot,
 					emulator: emulatorFor(manifest, f.romId),
 					contentHash: f.hash === '' ? null : f.hash,
-					deviceId: null,
+					// `null` on pre-5.x; the real id when the device exists
+					// but the negotiate failed.
+					deviceId,
 				},
 				signal,
 			);
@@ -500,7 +512,10 @@ export async function runSaveSync(
 					snapshotFile(manifest, local);
 					continue;
 				}
-				// Both differ: newest wins by mtime.
+				// Both differ: newest wins by mtime. Both sides in epoch ms
+				// (`local.mtime` is ms via `fileMtime`; `Date.parse` is ms)
+				// — mixing seconds in here made the local copy look ancient
+				// and every state re-download itself.
 				const remoteMtime = Date.parse(remote.updatedAt);
 				const localIsNewer =
 					local.mtime > 0 &&
@@ -526,7 +541,12 @@ export async function runSaveSync(
 						}
 					}
 				} else {
-					const ok = await downloadState(client, remote, `${PATHS.statesDir}/${local.fileName}`, signal);
+					const ok = await downloadState(
+						client,
+						remote,
+						`${stateDirFor(local.romId)}/${local.fileName}`,
+						signal,
+					);
 					if (ok) {
 						report.states += 1;
 						snapshotFile(manifest, local);
@@ -559,10 +579,8 @@ function downloadDest(manifest: Manifest, op: { romId: number; fileName: string 
 	const rom = manifest.roms[String(op.romId)];
 	const dot = op.fileName.lastIndexOf('.');
 	const ext = dot > 0 ? op.fileName.slice(dot) : '.sav';
-	if (rom !== undefined && rom.playPath !== '') {
-		return `${PATHS.savesDir}/${baseNameOf(rom.playPath)}${ext}`;
-	}
-	return `${PATHS.savesDir}/${op.fileName}`;
+	const base = rom !== undefined && rom.playPath !== '' ? baseNameOf(rom.playPath) : op.fileName;
+	return `${saveDirFor(op.romId)}/${base}${ext}`;
 }
 
 /**
@@ -617,6 +635,9 @@ export async function downloadSave(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	const part = dest + '.part';
+	// Ensure the per-rom directory exists before writing.
+	const parent = dest.slice(0, dest.lastIndexOf('/'));
+	await mkdir(parent);
 	try {
 		const res = await client.request(`/api/saves/${saveId}/content`, {}, signal);
 		if (!res.ok) return false;
@@ -646,6 +667,8 @@ async function downloadState(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	const part = dest + '.part';
+	const parent = dest.slice(0, dest.lastIndexOf('/'));
+	await mkdir(parent);
 	try {
 		const res = await client.request(`/api/states/${state.id}/content`, {}, signal);
 		if (!res.ok) return false;

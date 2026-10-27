@@ -19,7 +19,6 @@
  *               platforms / recently added / collections)
  *   picker      the multi-disc chooser
  *   downloads   the download queue (the Play feature's transfers)
- *   doctor      the Play setup doctor
  *   design      the design-system showcase (every src/components/ui atom)
  *   states      the empty / loading / error states
  *
@@ -52,10 +51,13 @@ import { GameDetail } from '../../src/components/GameDetail';
 import { DiscPicker } from '../../src/components/DiscPicker';
 import { Spinner } from '../../src/components/Spinner';
 import { DownloadsScreen } from '../../src/components/DownloadsScreen';
-import { SetupDoctor } from '../../src/components/SetupDoctor';
+import { SpinnerView, SectionsView } from './widgets';
 import { installErrorTrap } from '../../src/errors';
 import { patchInsertBefore } from '../../src/react-tela-compat';
 import { coverCacheSize, hasCover, resolveCover } from '../../src/covers';
+import { play } from '../../src/play';
+import { buildRaGameView } from '../../src/ra';
+import type { RomRAchievement, RomRAGameProgression } from '../../src/romm';
 import { MOCK_GAMES, MOCK_COLLECTIONS } from '../../src/mock';
 import { downloadQueue } from '../../src/roms/download';
 import { colors } from '../../src/theme';
@@ -145,6 +147,37 @@ if (params.get('connect') === '0') {
 	]) {
 		localStorage.removeItem(key);
 	}
+}
+
+// `?forceplay=1` forces the detail screen into its fullest non-demo state
+// (installed + RA-matched) without a live RomM, so the action block's
+// four-secondary wrap (Sync saves / Achievements / Discs / Uninstall) can
+// be checked in preview.
+if (params.get('forceplay') === '1') {
+	const fakeState = { kind: 'ready' } as const;
+	play.noteGame = () => {};
+	play.stateFor = () => fakeState;
+	const set: RomRAchievement[] = [1, 2].map((i) => ({
+		id: i,
+		title: `Ach ${i}`,
+		description: '',
+		points: 5,
+		numAwarded: 10,
+		numAwardedHardcore: 5,
+		badgeUrl: '',
+		badgeUrlLocked: '',
+		displayOrder: i,
+	}));
+	const progression: RomRAGameProgression = {
+		romRaId: 42,
+		maxPossible: 10,
+		numAwarded: 1,
+		numAwardedHardcore: 1,
+		mostRecentAwardedDate: null,
+		highestAwardKind: 'HARDCORE',
+		earned: [{ id: '1', date: '2026-01-01', dateHardcore: '2026-01-01' }],
+	};
+	play.raGameView = () => Promise.resolve(buildRaGameView(42, set, progression));
 }
 
 // Fake virtual keyboard (nx.js provides the real one on-device).
@@ -550,23 +583,6 @@ function DownloadsView() {
 	return <DownloadsScreen onBack={() => {}} />;
 }
 
-/**
- * The Play setup doctor on its own. Without a bound client it reports the
- * "not connected" line, which is enough to check the layout.
- */
-function DoctorView() {
-	return (
-		<SetupDoctor
-			onBack={() => {}}
-			baseUrl="http://10.147.18.46:8200"
-			platforms={[
-				{ name: 'Nintendo 64', id: 7 },
-				{ name: 'PlayStation', id: 11 },
-			]}
-		/>
-	);
-}
-
 /** The disc picker on its own, pointed at the mock's multi-disc release. */
 function PickerView() {
 	const multi = useMemo(
@@ -605,10 +621,12 @@ if (view === 'demo' || view === 'filter' || view === 'empty') {
 } else if (view === 'detail') {
 	const game = ART_GAMES[num('game', 0)] ?? ART_GAMES[0];
 	const info = discInfoOf(groupTitles(ART_GAMES)).get(game.id);
+	// `forceplay` fabricates the multi-disc half of the four-secondary state.
+	const disc = params.get('forceplay') === '1' ? { index: 0, count: 2 } : info ?? undefined;
 	renderApp(
 		<GameDetail
 			game={game}
-			disc={info ?? undefined}
+			disc={disc}
 			onBack={() => {
 				log.push('back');
 				flush();
@@ -621,6 +639,14 @@ if (view === 'demo' || view === 'filter' || view === 'empty') {
 				log.push('discs');
 				flush();
 			}}
+			onOpenAchievements={
+				params.get('forceplay') === '1'
+					? () => {
+							log.push('achievements');
+							flush();
+						}
+					: undefined
+			}
 		/>,
 	);
 } else if (view === 'spinner') {
@@ -631,8 +657,6 @@ if (view === 'demo' || view === 'filter' || view === 'empty') {
 	renderApp(<PickerView />);
 } else if (view === 'downloads') {
 	renderApp(<DownloadsView />);
-} else if (view === 'doctor') {
-	renderApp(<DoctorView />);
 } else if (view === 'design') {
 	// The design-system showcase: every primitive in src/components/ui on the
 	// real 1280×720 canvas (surfaces, type, actions, covers, focus, metadata).

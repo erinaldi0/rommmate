@@ -15,6 +15,14 @@ await build({
 	target: 'es2022',
 	format: 'iife',
 	outfile: 'tools/preview/bundle.js',
+	// The 7z-wasm handling the device build uses (tools/build.mjs): the
+	// binary inlines, and the Emscripten glue's node-only `import("module")`
+	// is externalised (it is behind an environment check, never run in a
+	// browser).
+	loader: {
+		'.wasm': 'binary',
+	},
+	external: ['module'],
 	jsx: 'transform',
 	jsxFactory: 'React.createElement',
 	jsxFragment: 'React.Fragment',

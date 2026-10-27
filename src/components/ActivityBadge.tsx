@@ -46,11 +46,10 @@ export function ActivityBadge({ y = Y }: Props) {
 	const activities = useSyncExternalStore(subscribeActivity, getActivities);
 
 	// The dots only move while something actually runs, so an idle badge
-	// repaints nothing. (Downloads and syncs count as "running" too — they
-	// are the badge's reason to exist now that the app does real work.)
-	const hasSpinner = activities.some(
-		(a) => a.key === 'library' || a.key === 'download' || a.key === 'sync',
-	);
+	// repaints nothing. Library walks and save syncs count as "running".
+	// (Downloads no longer appear here — the install card's bar is their
+	// indicator, and the two used to stack in the same corner.)
+	const hasSpinner = activities.some((a) => a.key === 'library' || a.key === 'sync');
 	const tick = useTick(SPINNER_TICK_MS, hasSpinner);
 
 	if (activities.length === 0) return null;

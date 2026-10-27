@@ -4,15 +4,43 @@
 import type { RommGame, RommTitle } from './types';
 
 /**
+ * The disc number a name implies, or 0 when it implies none:
+ * `(Disc 2)` → 2, `CD 10` → 10, `Volume 3` → 3, `Part II`-style words
+ * don't count, and `3 of 5` → 3. When several matches exist the *last*
+ * wins — trailing tags are the release's disc marker, while an earlier
+ * "Part 1" may be part of the title itself.
+ *
+ * The number is capped: a five-digit "disc" is a year or a build, not a
+ * disc, and would otherwise swamp every real number in the sort.
+ */
+const DISC_KEYWORD = /\b(?:disc|disk|cd|cdrom|volume|vol\.?|side|part)\b[\s\-#:_\.]*([0-9]{1,4})\b/gi;
+const DISC_OF = /\b([0-9]{1,4})\s+of\s+[0-9]{1,4}\b/gi;
+const DISC_MAX = 1000;
+
+export function discNumber(source: string): number {
+	if (source === '') return 0;
+	let n = 0;
+	for (const m of source.matchAll(DISC_KEYWORD)) n = Number(m[1]);
+	if (n > 0 && n < DISC_MAX) return n;
+	n = 0;
+	for (const m of source.matchAll(DISC_OF)) n = Number(m[1]);
+	return n > 0 && n < DISC_MAX ? n : 0;
+}
+
+/**
  * Group raw rom entries into titles: every disc of one release becomes a
  * single browsable game.
  *
  * The group key is the smallest disc id (unidentified roms fall back to a
  * content hash, kept negative so it can never collide with a real id).
  * Discs order by the server's `sort_comparator` when it gave one, then by
- * file name — RomM computes that key from the release structure, so it is
- * the only ordering that is right for "Disc 2" versus "disc 02" versus
- * "Part II". The title represents the user's main disc, or the first one.
+ * file name. Beware the key: RomM derives it from the rom's *name*, and an
+ * identified release hands every disc the same name — so for the common
+ * multi-disc game the key ties for the whole release. The tie is broken by
+ * the disc number the file name carries ("(Disc 2)" versus "(disc 02)"
+ * versus "Part II"), which is the only ordering that is right; the rom id
+ * is the last resort, and it is import order, not disc order. The title
+ * represents the user's main disc, or the first one.
  *
  * The input may be partial (a walk still streaming): a disc whose entry has
  * not arrived yet is still shown, from its sibling stub.
@@ -92,20 +120,49 @@ export function groupTitles(games: RommGame[]): RommTitle[] {
 		// behind in a sibling list; the entry wins wherever both exist.
 		const keys = new Set<string>([...b.discs.keys(), ...b.sort.keys(), ...b.stubName.keys(), ...b.stubFs.keys()]);
 
-		const discs: Array<{ key: string; game: RommGame | null; label: string; sort: string; isMain: boolean }> = [];
+		interface Disc {
+			key: string;
+			game: RommGame | null;
+			label: string;
+			sort: string;
+			/** The disc number the file name carries (0 = none). */
+			disc: number;
+			/** The most complete name known for the disc (tags included). */
+			full: string;
+			isMain: boolean;
+		}
+		const discs: Disc[] = [];
 		for (const k of keys) {
 			const game = b.discs.get(k) ?? null;
 			const id = k.startsWith('s') ? 0 : Number(k);
 			const label = game?.name || b.stubName.get(k) || b.stubFs.get(k) || (id > 0 ? `Game #${id}` : 'Unknown game');
-			const sort = b.sort.get(k) ?? game?.fsName ?? game?.name ?? k;
-			discs.push({ key: k, game, label, sort, isMain: game?.isMain === true || b.main.get(k) === true });
+			// `||`, not `??`: an empty name must fall through to the next
+			// source, otherwise every nameless disc ties on the empty key.
+			const full = game?.fsName || game?.files[0]?.fileName || game?.name || b.stubFs.get(k) || b.stubName.get(k) || '';
+			const sort = b.sort.get(k) || full || k;
+			discs.push({ key: k, game, label, sort, full, disc: discNumber(full), isMain: game?.isMain === true || b.main.get(k) === true });
 		}
 		discs.sort((a, z) => {
 			if (a.sort !== z.sort) return a.sort < z.sort ? -1 : 1;
-			// Equal ordering keys: the id is the only tiebreak that is
-			// stable across walks — insertion order differs between the
-			// full library and a partial favourites/collection walk, and
-			// the disc number must not depend on which walk ran.
+			// Equal ordering keys — which for an *identified* release happens
+			// to every disc, because RomM derives the key from the rom's name
+			// and the release shares one — the file name's disc number is the
+			// only ordering to trust: a lower number first, and a numbered
+			// disc ahead of an unnumbered one (a bonus without a number sorts
+			// after the release's numbered discs, where it belongs).
+			if (a.disc !== z.disc) {
+				if (a.disc > 0 && z.disc > 0) return a.disc - z.disc;
+				return a.disc > 0 ? -1 : 1;
+			}
+			// The same number (or none): the tagged name is the last string
+			// that can tell the discs apart. (A lexicographic "(Disc 2)" <
+			// "(Disc 10)" would misorder 10+ disc releases — the keyword
+			// number above already handles those; this is the no-number case.)
+			if (a.full !== z.full) return a.full < z.full ? -1 : 1;
+			// Id-less roms fall back to a slot key; the id is the only
+			// tiebreak that is stable across walks — insertion order differs
+			// between the full library and a partial favourites/collection
+			// walk, and the disc number must not depend on which walk ran.
 			const ia = a.key.startsWith('s') ? Number.MAX_SAFE_INTEGER : Number(a.key);
 			const iz = z.key.startsWith('s') ? Number.MAX_SAFE_INTEGER : Number(z.key);
 			return ia - iz;
@@ -119,7 +176,11 @@ export function groupTitles(games: RommGame[]): RommTitle[] {
 				slot += 1;
 				if (d.game !== null) {
 					fullDiscs.push(d.game);
-					discReleaseSlots.push(slot);
+					// The disc's own number when the file name says so — a
+					// partial title (a favourites walk) then names the *same*
+					// disc a full walk does, instead of renumbering from its
+					// position among the stubs; the position is the fallback.
+					discReleaseSlots.push(d.disc > 0 ? d.disc : slot);
 				}
 			}
 		}

@@ -13,7 +13,7 @@
  * when a label actually changes, which keeps it off the coarse-tick path.
  */
 
-export type ActivityKey = 'library' | 'artwork' | 'download' | 'sync';
+export type ActivityKey = 'library' | 'artwork' | 'sync';
 
 export interface Activity {
 	key: ActivityKey;

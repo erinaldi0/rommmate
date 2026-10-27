@@ -32,14 +32,14 @@ interface Props {
 	onKeyboardChange: (mode: KeyboardMode) => void;
 	/** Persist an auto-sync change (the Play behaviour row). */
 	onAutoSyncChange: (on: boolean) => void;
-	/** Open the Play setup doctor (the Play row). */
-	onOpenSetup: () => void;
+	/** Open the RetroAchievements subscreen (the RA row). */
+	onOpenRa: () => void;
 }
 
 /** A settings row: an editable text field, or a named action. */
 type Row =
 	| { kind: 'field'; label: string; field: Field }
-	| { kind: 'action'; label: string; action: 'method' | 'save' | 'demo' | 'keyboard' | 'autosync' | 'setup' };
+	| { kind: 'action'; label: string; action: 'method' | 'save' | 'demo' | 'keyboard' | 'autosync' | 'ra' };
 
 // Labels must stay short: the value column starts 280 px in, and a longer
 // label ("Demo mode (mock data)" did) runs straight into the value text.
@@ -68,15 +68,16 @@ function buildRows(method: AuthMethod): Row[] {
 		{ kind: 'action', label: 'Demo mode', action: 'demo' },
 		{ kind: 'action', label: 'Keyboard', action: 'keyboard' },
 		{ kind: 'action', label: 'Auto-sync saves', action: 'autosync' },
-		{ kind: 'action', label: 'Play setup', action: 'setup' },
+		{ kind: 'action', label: 'RetroAchievements', action: 'ra' },
 	];
 }
 
-// Up to nine rows (password grant + the two Play rows) must clear the
-// status line and the footer hint.
+// Up to nine rows (password grant adds one field, the RA row is last)
+// must clear the status line and the footer hint: 168 + 9·(44+6) − 6 =
+// 612, just above the hint bar's strip.
 const ROW_W = 920;
-const ROW_H = 48;
-const ROW_GAP = 8;
+const ROW_H = 44;
+const ROW_GAP = 6;
 const ROW_TOP = 168;
 
 function mask(v: string): string {
@@ -95,7 +96,7 @@ function maskSecret(v: string): string {
 	return v ? '•'.repeat(Math.min(16, Math.max(4, v.length))) : '(not set)';
 }
 
-export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel, onKeyboardChange, onAutoSyncChange, onOpenSetup }: Props) {
+export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel, onKeyboardChange, onAutoSyncChange, onOpenRa }: Props) {
 	const dims = useDimensions();
 	const [cfg, setCfg] = useState<Config>(initial);
 	const method = cfg.authMethod ?? DEFAULT_AUTH_METHOD;
@@ -115,6 +116,11 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 				return cfg.password ?? '';
 			case 'pairingCode':
 				return cfg.pairingCode ?? '';
+			// The RA credentials live on their own subscreen; the union
+			// shares the hook, so these two are only type-level here.
+			case 'raUsername':
+			case 'raPassword':
+				return '';
 		}
 	}
 
@@ -131,6 +137,10 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 				return { password: value };
 			case 'pairingCode':
 				return { pairingCode: value };
+			case 'raUsername':
+				return { raUsername: value };
+			case 'raPassword':
+				return { raPassword: value };
 		}
 	}
 
@@ -184,7 +194,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 			if (!busy) onSave(cfg);
 		} else if (row.action === 'demo') onDemo();
 		else if (row.action === 'autosync') cycleAutoSync();
-		else if (row.action === 'setup') onOpenSetup();
+		else if (row.action === 'ra') onOpenRa();
 		else cycleKeyboard();
 	}
 
@@ -199,7 +209,7 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 	useGamepadButton(
 		'A',
 		() => activateRow(focus),
-		[focus, cfg, busy, onDemo, onSave, onKeyboardChange, onAutoSyncChange, onOpenSetup],
+		[focus, cfg, busy, onDemo, onSave, onKeyboardChange, onAutoSyncChange, onOpenRa],
 		kbd === null,
 	);
 	useGamepadButton(
@@ -257,7 +267,11 @@ export function SettingsScreen({ initial, status, busy, onSave, onDemo, onCancel
 		if (row.action === 'save') return busy ? 'connecting… · B to cancel' : 'A to save & open library';
 		if (row.action === 'demo') return 'A to skip the login and browse mock games';
 		if (row.action === 'autosync') return (cfg.autoSync ?? true) ? 'on — A to turn off' : 'off — A to turn on';
-		if (row.action === 'setup') return 'A to check loader, cores & BIOS';
+		if (row.action === 'ra') {
+			if (cfg.raEnabled !== true) return 'off — A to configure tracking';
+			const user = (cfg.raUsername ?? '').trim();
+			return user !== '' ? `on — tracking as ${user}` : 'on — set your RA account';
+		}
 		return `${cfg.keyboard ?? 'builtin'} — A to change`;
 	};
 

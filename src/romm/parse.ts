@@ -7,7 +7,13 @@
  * sensible value — an unknown schema degrades to an empty field instead of
  * a parse failure. `RommClient` runs every entry through these.
  */
-import type { RommRomFile } from './types';
+import type {
+	RommRomFile,
+	RomRAchievement,
+	RomRAEarnedAchievement,
+	RomRAGameProgression,
+	RomRAProgression,
+} from './types';
 
 /**
  * Read one entry of a RomM `assets` object (≤4.x). Asset values come in two
@@ -243,6 +249,134 @@ export function parseFiles(e: Record<string, unknown>): RommRomFile[] {
 		});
 	}
 	return out;
+}
+
+/** A non-negative integer from a possibly-string JSON value, or 0 when absent. */
+function raInt(v: unknown): number {
+	if (typeof v === 'number' && Number.isFinite(v)) return v < 0 ? 0 : v;
+	if (typeof v === 'string') {
+		const n = Number(v);
+		if (Number.isFinite(n)) return n < 0 ? 0 : n;
+	}
+	return 0;
+}
+
+/** A nullable integer: null when the field is absent, else the number. */
+function optInt(v: unknown): number | null {
+	if (typeof v === 'number' && Number.isFinite(v)) return v;
+	if (typeof v === 'string' && v !== '') {
+		const n = Number(v);
+		if (Number.isFinite(n)) return n;
+	}
+	return null;
+}
+
+/** A nullable string: null for empty/absent values. */
+function optStr(v: unknown): string | null {
+	if (typeof v === 'string' && v !== '') return v;
+	return null;
+}
+
+/**
+ * The RA game id a rom is matched to (a positive integer), or 0 when the
+ * server has no match. This is the "is this game RA-compatible" signal the
+ * detail badge reads; it is cheap, so it is parsed in every list entry.
+ */
+export function parseRaId(e: Record<string, unknown>): number {
+	const v = e['ra_id'];
+	if (typeof v === 'number' && v > 0) return v;
+	if (typeof v === 'string') {
+		const n = Number(v);
+		if (Number.isFinite(n) && n > 0) return n;
+	}
+	return 0;
+}
+
+/** The RA file hash the server matched against, or ''. */
+export function parseRaHash(e: Record<string, unknown>): string {
+	return firstString(e, ['ra_hash']);
+}
+
+/**
+ * The game's published achievement set, from RomM's `merged_ra_metadata`
+ * blob (a 5.x-only field; the achievements screen fetches it on demand via
+ * the single-rom route, so the list walk never carries it). Returns [] when
+ * the blob or its achievements are absent.
+ */
+export function parseRaAchievements(e: Record<string, unknown>): RomRAchievement[] {
+	const meta = e['merged_ra_metadata'];
+	if (typeof meta !== 'object' || meta === null) return [];
+	const raw = (meta as Record<string, unknown>)['achievements'];
+	if (!Array.isArray(raw)) return [];
+
+	const out: RomRAchievement[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== 'object' || entry === null) continue;
+		const a = entry as Record<string, unknown>;
+		const id = raInt(a['ra_id']);
+		out.push({
+			id,
+			title: firstString(a, ['title']) || (id > 0 ? `Achievement ${id}` : 'Achievement'),
+			description: firstString(a, ['description']),
+			points: raInt(a['points']),
+			numAwarded: raInt(a['num_awarded']),
+			numAwardedHardcore: raInt(a['num_awarded_hardcore']),
+			// `badge_url`/`badge_url_lock` are absolute; the `*_path` forms
+			// are the relative fallback some builds emit.
+			badgeUrl: firstString(a, ['badge_url', 'badge_path']),
+			badgeUrlLocked: firstString(a, ['badge_url_lock', 'badge_path_lock']),
+			displayOrder: raInt(a['display_order']),
+		});
+	}
+	return out;
+}
+
+/**
+ * The user's RA progression from `GET /api/users/me` (`ra_progression`), or
+ * null when the field is absent (no linked RA account in RomM, or a
+ * pre-5.x server). Kept whole so the achievements screen can join it to a
+ * game by `rom_ra_id`.
+ */
+export function parseRaProgression(e: Record<string, unknown>): RomRAProgression | null {
+	const raw = e['ra_progression'];
+	if (typeof raw !== 'object' || raw === null) return null;
+	const p = raw as Record<string, unknown>;
+
+	const resultsRaw = p['results'];
+	const results: RomRAGameProgression[] = [];
+	if (Array.isArray(resultsRaw)) {
+		for (const entry of resultsRaw) {
+			if (typeof entry !== 'object' || entry === null) continue;
+			const r = entry as Record<string, unknown>;
+			const earnedRaw = r['earned_achievements'];
+			const earned: RomRAEarnedAchievement[] = [];
+			if (Array.isArray(earnedRaw)) {
+				for (const ea of earnedRaw) {
+					if (typeof ea !== 'object' || ea === null) continue;
+					const eo = ea as Record<string, unknown>;
+					const eid = eo['id'];
+					const idStr =
+						typeof eid === 'string' ? eid : typeof eid === 'number' ? String(eid) : '';
+					if (idStr === '') continue;
+					earned.push({
+						id: idStr,
+						date: typeof eo['date'] === 'string' ? eo['date'] : '',
+						dateHardcore: typeof eo['date_hardcore'] === 'string' ? eo['date_hardcore'] : null,
+					});
+				}
+			}
+			results.push({
+				romRaId: raInt(r['rom_ra_id']),
+				maxPossible: optInt(r['max_possible']),
+				numAwarded: optInt(r['num_awarded']),
+				numAwardedHardcore: optInt(r['num_awarded_hardcore']),
+				mostRecentAwardedDate: optStr(r['most_recent_awarded_date']),
+				highestAwardKind: optStr(r['highest_award_kind']),
+				earned,
+			});
+		}
+	}
+	return { total: raInt(p['total']), results };
 }
 
 /** A small, stable string hash (djb2) — for content keys of id-less roms. */

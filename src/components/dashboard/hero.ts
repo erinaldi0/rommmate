@@ -52,6 +52,8 @@ export function stateChip(state: PlayState): Chip {
 			return { text: 'Not installed', fill: colors.surfaceRaised, textFill: colors.textMuted, tone: 'surface' };
 		case 'installing':
 			return { text: 'Installing…', fill: colors.accentMuted, textFill: colors.accent, tone: 'accent' };
+		case 'verifying':
+			return { text: 'Verifying…', fill: colors.accentMuted, textFill: colors.accent, tone: 'accent' };
 		case 'ready':
 			return { text: 'Installed', fill: colors.surfaceRaised, textFill: colors.success, tone: 'success' };
 		case 'stale':

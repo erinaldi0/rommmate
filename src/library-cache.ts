@@ -22,8 +22,12 @@ import type { RommGame, RommPlatform } from './romm';
 const CACHE_PATH = `${PATHS.appDir}/library.ndjson`;
 const TMP_PATH = `${PATHS.appDir}/library.ndjson.tmp`;
 
-/** Bump when the RommGame shape changes in a way old caches cannot satisfy. */
-const CACHE_VERSION = 1;
+/**
+ * Bump when the RommGame shape changes in a way old caches cannot satisfy.
+ * v2: the RA fields (`raId`/`raHash`) joined the game — v1 lines lack them,
+ * so a v1 cache is discarded and the next walk rewrites it.
+ */
+const CACHE_VERSION = 2;
 
 interface CacheHeader {
 	/** The literal `_cache: 1` marks the line as the header. */
@@ -84,6 +88,11 @@ export async function readLibraryCache(base: string): Promise<RommGame[] | null>
 			try {
 				const game = JSON.parse(t) as RommGame;
 				if (typeof game.id !== 'number' || typeof game.name !== 'string') continue;
+				// Defence in depth: a line missing the RA fields (an older
+				// writer, or a version reset) normalises to "no match"
+				// rather than an `undefined` that could slip past the badge.
+				if (typeof game.raId !== 'number') game.raId = 0;
+				if (typeof game.raHash !== 'string') game.raHash = '';
 				games.push(game);
 			} catch {
 				// One bad line costs its game, never the cache.
@@ -92,13 +101,22 @@ export async function readLibraryCache(base: string): Promise<RommGame[] | null>
 		return true;
 	};
 
-	// Windowed read: `end` is inclusive, both on-device and in the
-	// preview's in-memory stand-in.
-	for (let start = 0; start < size; start += READ_WINDOW) {
-		const endInclusive = Math.min(size - 1, start + READ_WINDOW - 1);
-		const buf = await readBinary(CACHE_PATH, { start, end: endInclusive });
+	// Windowed read, `end` exclusive (the device runtime's actual semantics
+	// — its docs say inclusive but it returns one byte less). The next
+	// window starts where the last one ACTUALLY ended: a fixed
+	// `start += READ_WINDOW` would skip the one byte each short window
+	// leaves behind, and a byte missing from the middle of a line corrupts
+	// that game's JSON.
+	let start = 0;
+	while (start < size) {
+		const buf = await readBinary(CACHE_PATH, {
+			start,
+			end: Math.min(size, start + READ_WINDOW),
+		});
 		if (buf === null) return null;
 		const chunk = new Uint8Array(buf);
+		if (chunk.length === 0) break; // a failed read: stop, never spin
+		start += chunk.length;
 		const joined: Uint8Array = carry === null ? chunk : concatBytes(carry, chunk);
 		// Split at the last newline: UTF-8 continuation bytes are always
 		// ≥ 0x80, so a split at \n can never cut a character in half.

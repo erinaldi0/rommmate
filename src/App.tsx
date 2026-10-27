@@ -17,6 +17,7 @@ import { onFatalError } from './errors';
 import {
 	RommClient,
 	groupTitles,
+	normalizeBaseUrl,
 	type RommGame,
 	type RommCollection,
 	type RommPlatform,
@@ -35,10 +36,11 @@ import { LibrarySections } from './components/LibrarySections';
 import { GameDetail } from './components/GameDetail';
 import { DiscPicker } from './components/DiscPicker';
 import { DownloadsScreen } from './components/DownloadsScreen';
-import { SetupDoctor } from './components/SetupDoctor';
+import { RAScreen } from './components/RAScreen';
+import { RAAchievementsScreen } from './components/RAAchievementsScreen';
 import { ActivityBadge } from './components/ActivityBadge';
 
-type Route = 'settings' | 'library' | 'detail' | 'downloads' | 'doctor';
+type Route = 'settings' | 'library' | 'detail' | 'downloads' | 'ra' | 'ra-achievements';
 
 /**
  * The user-created tooling platform (it holds the emulator, not games) is
@@ -60,6 +62,11 @@ export function App() {
 	const [games, setGames] = useState<RommGame[]>([]);
 	const [status, setStatus] = useState('');
 	const [busy, setBusy] = useState(false);
+	/** Progress of the in-flight library walk (loaded / total roms). */
+	const [progress, setProgress] = useState<{ loaded: number; total: number | null }>({
+		loaded: 0,
+		total: null,
+	});
 	const [fatal, setFatal] = useState<string | null>(null);
 	/** True while the library shows mocked data instead of a real RomM server. */
 	const [demo, setDemo] = useState(false);
@@ -126,6 +133,18 @@ export function App() {
 		configureCovers(cfg.token, cfg.baseUrl);
 	}, [cfg.token, cfg.baseUrl]);
 
+	// Load the manifest at boot — even without a server connection — so the
+	// play service can show locally installed ROMs as ready instead of
+	// "demo mode". A later successful connect re-binds with the client.
+	useEffect(() => {
+		let mounted = true;
+		void play.bind(null, cfg);
+		return () => {
+			mounted = false;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	const connect = useCallback(async (config: Config) => {
 		// Each connection attempt gets a generation number: a late result
 		// (or a walk the user abandoned) must never write state the user
@@ -136,6 +155,7 @@ export function App() {
 		aborter.current = controller;
 
 		setBusy(true);
+		setProgress({ loaded: 0, total: null });
 		setStatus('Connecting…');
 		// A new library replaces whatever the screen is looking at.
 		setSection(null);
@@ -157,12 +177,47 @@ export function App() {
 			log('connect', 'refused: empty Base URL');
 			return;
 		}
+
+		// ── the offline library first ─────────────────────────────────
+		// The last completed walk is cached on the SD card keyed to this
+		// instance's base URL. Show it *before* anything talks to the
+		// network: with the server unreachable the app still has a
+		// library to browse, installed games to play and local saves.
+		// Once the cache is painted we drop `busy` so the library is
+		// visible; the network refresh runs over it in the background.
+		log('mem', `connect ${memSnapshot()}`);
+		let fromCache = false;
+		let cachedGames: RommGame[] | null = null;
+		try {
+			const cached = await readLibraryCache(normalizeBaseUrl(cur.baseUrl.trim()));
+			if (cached !== null) {
+				const visible = cached.filter((g) => !isHiddenPlatform(g.platform));
+				fromCache = true;
+				cachedGames = cached;
+				log('library', `cache: ${visible.length} games (${cached.length} total)`);
+				log('mem', `cache-loaded ${memSnapshot()}`);
+				setGames(visible);
+				setRoute('library');
+				setBusy(false);
+				setStatus(`Loaded ${visible.length} games — updating…`);
+			}
+		} catch {
+			/* the cache is a nicety, never a gate */
+		}
+
 		// With no active connection the OS resolver rejects even a numeric
 		// host outright ("Address family for hostname not supported") —
-		// check nifm first so the message is actionable.
+		// check nifm before trying. But a server being asked over a dead
+		// link is only an update skip, not a blocker: with the cached
+		// library on screen we simply stay offline.
 		const net = networkStatus();
 		if (net.problem !== null) {
 			setBusy(false);
+			if (fromCache) {
+				log('connect', `offline: ${net.problem} — cached library shown`);
+				setStatus('Offline — showing the saved library');
+				return;
+			}
 			setStatus(`Connection failed: ${net.problem}`);
 			log('connect', `refused: ${net.problem}`);
 			return;
@@ -195,30 +250,8 @@ export function App() {
 
 		const client = buildClient(() => cur, session);
 		clientRef.current = client;
-
-		// Cache-first: the last completed walk is on the SD card — show it
-		// before any network wait and refresh over it. (The cache is keyed
-		// to this instance's base URL, so a config change ignores it.)
-		// While `fromCache`, streamed batches do not append (the whole
-		// library is already on screen) — only the final result replaces it.
-		let fromCache = false;
-		let cachedGames: RommGame[] | null = null;
-		log('mem', `connect ${memSnapshot()}`);
-		try {
-			const cached = await readLibraryCache(client.base);
-			if (gen === runGen.current && cached !== null) {
-				const visible = cached.filter((g) => !isHiddenPlatform(g.platform));
-				fromCache = true;
-				cachedGames = cached;
-				log('library', `cache: ${visible.length} games (${cached.length} total)`);
-				log('mem', `cache-loaded ${memSnapshot()}`);
-				setGames(visible);
-				setRoute('library');
-				setStatus(`Loaded ${visible.length} games — updating…`);
-			}
-		} catch {
-			/* the cache is a nicety, never a gate */
-		}
+		// (The offline cache was already loaded up top: `fromCache` tells
+		// whether the walk refreshes over a shown library.)
 
 		const authErr = await client.authenticate(controller.signal);
 		if (gen !== runGen.current) return;
@@ -393,6 +426,7 @@ export function App() {
 			}
 			if (!failed) {
 				setBusy(false);
+				setProgress({ loaded: 0, total: null });
 				setActivity('library', null);
 				finish(merged, changed ? 'sync' : 'up-to-date', false, changed);
 				return;
@@ -401,6 +435,7 @@ export function App() {
 			// (`setGames` already holds it), but the sync state is left
 			// stale so the next boot re-checks everything.
 			setBusy(false);
+			setProgress({ loaded: 0, total: null });
 			setActivity('library', null);
 			setStatus('Saved library shown — update failed');
 			return;
@@ -417,6 +452,7 @@ export function App() {
 			() => {},
 			(loaded, total) => {
 				if (gen !== runGen.current) return;
+				setProgress({ loaded, total });
 				setStatus(`Updating library… ${loaded}${total !== null ? ` / ${total}` : ''}`);
 				setActivity(
 					'library',
@@ -438,6 +474,7 @@ export function App() {
 		if (gen !== runGen.current) return;
 
 		setBusy(false);
+		setProgress({ loaded: 0, total: null });
 		setActivity('library', null);
 
 		if (controller.signal.aborted) {
@@ -471,6 +508,7 @@ export function App() {
 		log('connect', 'cancelled');
 		aborter.current?.abort();
 		setBusy(false);
+		setProgress({ loaded: 0, total: null });
 		setStatus('Connection cancelled');
 		setActivity('library', null);
 	}
@@ -505,6 +543,19 @@ export function App() {
 		play.setConfig(next);
 	}
 
+	/**
+	 * Persist a RetroAchievements change from the RA subscreen. The screen
+	 * patches only the RA fields; this merges, saves, and hands the config
+	 * to the play service so the next launch writes the new `cheevos_*` set
+	 * into `retroarch.cfg`.
+	 */
+	function changeRa(patch: Partial<Config>) {
+		const next = { ...cfg, ...patch };
+		saveConfig(next);
+		setCfg(next);
+		play.setConfig(next);
+	}
+
 	// Skip the login entirely: fill the library with mocked games so the app
 	// can be used (and the next screens developed) without a RomM server.
 	// A walk still running is abandoned so it cannot stomp the mock data.
@@ -513,6 +564,7 @@ export function App() {
 		aborter.current?.abort();
 		setActivity('library', null);
 		setBusy(false);
+		setProgress({ loaded: 0, total: null });
 		setDemo(true);
 		// The Play service without a server: its rows go to "demo mode".
 		void play.bind(null, { ...cfg });
@@ -659,10 +711,23 @@ export function App() {
 		setRoute('library');
 	}
 
-	/** Open the Play setup doctor (from the settings screen). */
-	function openDoctor() {
-		setRoute('doctor');
+	/** Open the RetroAchievements settings subscreen (from the settings row). */
+	function openRa() {
+		setRoute('ra');
 	}
+
+	/** Open the achievements screen for the game the detail page shows. */
+	function openRaAchievements() {
+		if (detail === null) return;
+		setRoute('ra-achievements');
+	}
+
+	// The achievements screen needs a game to show: if the detail is ever
+	// cleared while the route lingers, fall back to the library rather than
+	// render an empty full-screen page.
+	useEffect(() => {
+		if (route === 'ra-achievements' && detail === null) setRoute('library');
+	}, [route, detail]);
 
 	// ── the dashboard's data ────────────────────────────────────────────────
 
@@ -693,20 +758,6 @@ export function App() {
 	const localFavTitles = useMemo(() => groupTitles(games.filter((g) => g.favorite)), [games]);
 	const favSource = favGames.length > 0 ? favTitles : localFavTitles;
 	const favSourceRaw = favGames.length > 0 ? favGames : games.filter((g) => g.favorite);
-
-	/**
-	 * The platforms actually present in the library (name + server id,
-	 * deduped) — the doctor checks the core/BIOS of these, not of every
-	 * platform the server happens to know.
-	 */
-	const doctorPlatforms = useMemo(() => {
-		const seen = new Map<string, { name: string; id: number }>();
-		for (const g of games) {
-			if (g.platform === '' || seen.has(g.platform)) continue;
-			seen.set(g.platform, { name: g.platform, id: g.platformId });
-		}
-		return [...seen.values()];
-	}, [games]);
 
 	/** The grid's slice for the open section, or null on the dashboard. */
 	const gridData = useMemo(() => {
@@ -743,16 +794,24 @@ export function App() {
 
 	if (fatal !== null) return <FatalError message={fatal} />;
 
-	// The settings, doctor and downloads routes replace the whole screen
-	// (full-screen utility pages, in contrast to the detail overlay).
-	if (route === 'settings' || route === 'doctor' || route === 'downloads') {
+	// The settings, downloads and RetroAchievements routes replace the
+	// whole screen (full-screen utility pages, in contrast to the detail
+	// overlay). The RA achievements route returns to the detail overlay.
+	if (
+		route === 'settings' ||
+		route === 'downloads' ||
+		route === 'ra' ||
+		route === 'ra-achievements'
+	) {
 		return (
 			<>
-				{route === 'doctor' ? (
-					<SetupDoctor
-						onBack={() => setRoute('settings')}
-						baseUrl={cfg.baseUrl}
-						platforms={doctorPlatforms}
+				{route === 'ra' ? (
+					<RAScreen initial={cfg} onBack={() => setRoute('settings')} onRaChange={changeRa} />
+				) : route === 'ra-achievements' && detail !== null ? (
+					<RAAchievementsScreen
+						game={detail}
+						demo={demo}
+						onBack={() => setRoute('detail')}
 					/>
 				) : route === 'downloads' ? (
 					<DownloadsScreen onBack={closeDownloads} />
@@ -766,7 +825,7 @@ export function App() {
 						onCancel={cancelConnect}
 						onKeyboardChange={changeKeyboard}
 						onAutoSyncChange={changeAutoSync}
-						onOpenSetup={openDoctor}
+						onOpenRa={openRa}
 					/>
 				)}
 				<ActivityBadge />
@@ -804,6 +863,7 @@ export function App() {
 				<LibrarySections
 					status={status}
 					busy={busy}
+					progress={progress}
 					demo={demo}
 					titles={titles}
 					favoriteTitles={favSource}
@@ -835,6 +895,7 @@ export function App() {
 					disc={detailDisc ?? undefined}
 					onBack={closeDetail}
 					onOpenDownloads={openDownloads}
+					onOpenAchievements={openRaAchievements}
 					onDiscs={() => {
 						const t = titles.find((x) => x.key === detail.gameKey);
 						if (t !== undefined) setPicker(t);

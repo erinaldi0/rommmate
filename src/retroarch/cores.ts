@@ -1,11 +1,17 @@
 /**
  * The platform → libretro core map.
  *
- * The official RetroArch release ships every core, but the Switch build is
- * a single 290 MB 7z (which the app cannot unpack — there is no 7z decoder
- * in JS). The setup flow instead pulls *individual* cores from the server,
- * so the map's job is to know, for a library platform, which of the core
- * files the user is expected to have uploaded.
+ * The official RetroArch release ships every core in a single 290 MB 7z,
+ * but per-core downloads are preferable: for most platforms the app pulls
+ * *individual* core zips straight off libretro's buildbot (the nightly
+ * `latest/` directory, see `bb` below), keeping only the loader need the
+ * full package. Cores the buildbot does not publish come from the
+ * tooling-platform uploads on the server.
+ *
+ * Downloads come, when possible, straight from libretro's buildbot (the
+ * per-core zips the Switch core updater itself pulls — see `bb` below); a
+ * core the buildbot does not publish falls back to the tooling-platform
+ * uploads on the server.
  *
  * The match is deliberately loose: a case-insensitive substring of the
  * core's base name, tested against the *server file name* of whatever sits
@@ -28,13 +34,21 @@ export interface CoreChoice {
 	 * whether an uploaded file *is* this core.
 	 */
 	match: RegExp;
+	/**
+	 * The core's base name on libretro's buildbot, when it is published
+	 * there (`mupen64plus_next_libretro_libnx.nro.zip` →
+	 * `mupen64plus_next`). Direct downloads are keyed off it; undefined
+	 * means the buildbot does not have this core under this name and the
+	 * server fallback is the only source.
+	 */
+	bb?: string;
 }
 
 /** One emulable platform and the cores that run it. */
 export interface CoreMapEntry {
 	/** The platform slugs (see `platformSlug`) this entry covers. */
 	aliases: string[];
-	/** The platform's own display name, for the doctor screen. */
+	/** The platform's own display name (labels). */
 	display: string;
 	/** Usable cores, best first. */
 	choices: CoreChoice[];
@@ -46,7 +60,12 @@ export interface CoreMapEntry {
 	bios: string[];
 }
 
-const C = (id: string, label: string, match: RegExp): CoreChoice => ({ id, label, match });
+const C = (id: string, label: string, match: RegExp, bb?: string): CoreChoice => ({
+	id,
+	label,
+	match,
+	bb,
+});
 
 /**
  * The map. `aliases` are `platformSlug` forms, so "Game Boy", "GAME BOY"
@@ -57,10 +76,10 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['nes', 'nintendoentertainsystem', 'famicom'],
 		display: 'NES',
 		choices: [
-			C('fceumm', 'FCEUmm', /fceumm/i),
-			C('quicknes', 'QuickNES', /quicknes/i),
-			C('nestopia', 'Nestopia UE', /nestopia/i),
-			C('mesenes', 'MESEN (NES)', /mesenes/i),
+			C('fceumm', 'FCEUmm', /fceumm/i, 'fceumm'),
+			C('quicknes', 'QuickNES', /quicknes/i, 'quicknes'),
+			C('nestopia', 'Nestopia UE', /nestopia/i, 'nestopia'),
+			C('mesenes', 'MESEN (NES)', /mesenes/i, 'mesen'),
 		],
 		bios: [],
 	},
@@ -70,10 +89,10 @@ export const CORE_MAP: CoreMapEntry[] = [
 		choices: [
 			// The 2010 fork is the best-maintained; it must be listed
 			// before plain snes9x (a 2010 file also matches /snes9x/).
-			C('snes9x2010', 'Snes9x 2010', /snes9x2010|snes9x_2010/i),
-			C('snes9x', 'Snes9x', /snes9x/i),
-			C('bsnes', 'bsnes HD Beta', /bsnes/i),
-			C('mesesnes', 'MESEN (SNES)', /mesesnes/i),
+			C('snes9x2010', 'Snes9x 2010', /snes9x2010|snes9x_2010/i, 'snes9x2010'),
+			C('snes9x', 'Snes9x', /snes9x/i, 'snes9x'),
+			C('bsnes', 'bsnes HD Beta', /bsnes/i, 'bsnes_hd_beta'),
+			C('mesesnes', 'MESEN (SNES)', /mesesnes/i, 'mesen-s'),
 		],
 		bios: [],
 	},
@@ -81,11 +100,11 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['gb', 'gameboy'],
 		display: 'Game Boy',
 		choices: [
-			C('gambatte', 'Gambatte', /gambatte/i),
-			C('tgb', 'TGCDual', /tgb/i),
-			C('gearboy', 'Gearboy', /gearboy/i),
+			C('gambatte', 'Gambatte', /gambatte/i, 'gambatte'),
+			C('tgb', 'TGCDual', /tgb/i, 'tgbdual'),
+			C('gearboy', 'Gearboy', /gearboy/i, 'gearboy'),
 			C('smootherplus', 'SmootherPlus', /smoother/i),
-			C('sameboy', 'SameBoy', /sameboy/i),
+			C('sameboy', 'SameBoy', /sameboy/i, 'sameboy'),
 		],
 		bios: [],
 	},
@@ -93,9 +112,9 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['gbc', 'gameboycolor'],
 		display: 'Game Boy Color',
 		choices: [
-			C('gambatte', 'Gambatte', /gambatte/i),
-			C('tgb', 'TGCDual', /tgb/i),
-			C('gearboy', 'Gearboy', /gearboy/i),
+			C('gambatte', 'Gambatte', /gambatte/i, 'gambatte'),
+			C('tgb', 'TGCDual', /tgb/i, 'tgbdual'),
+			C('gearboy', 'Gearboy', /gearboy/i, 'gearboy'),
 			C('smootherplus', 'SmootherPlus', /smoother/i),
 		],
 		bios: [],
@@ -104,9 +123,9 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['gba', 'gameboyanvance'],
 		display: 'Game Boy Advance',
 		choices: [
-			C('mgba', 'mGBA', /mgba/i),
-			C('vbanext', 'VBA-Next', /vba_next|vbanext/i),
-			C('gambatte', 'Gambatte', /gambatte/i),
+			C('mgba', 'mGBA', /mgba/i, 'mgba'),
+			C('vbanext', 'VBA-Next', /vba_next|vbanext/i, 'vba_next'),
+			C('gambatte', 'Gambatte', /gambatte/i, 'gambatte'),
 		],
 		bios: [],
 	},
@@ -114,7 +133,7 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['n64', 'nintendo64'],
 		display: 'Nintendo 64',
 		choices: [
-			C('mupen64plusnext', 'Mupen64Plus Next', /mupen64plus_next|mupen64plusnext/i),
+			C('mupen64plusnext', 'Mupen64Plus Next', /mupen64plus_next|mupen64plusnext/i, 'mupen64plus_next'),
 			C('mupen64plus', 'Mupen64Plus', /mupen64plus/i),
 			C('project64', 'Project64', /project64/i),
 		],
@@ -124,8 +143,8 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['nds', 'nintendods'],
 		display: 'Nintendo DS',
 		choices: [
-			C('desmume', 'DeSmuME', /desmume/i),
-			C('melonds', 'melonDS', /melonds/i),
+			C('desmume', 'DeSmuME', /desmume/i, 'desmume'),
+			C('melonds', 'melonDS', /melonds/i, 'melonds'),
 		],
 		bios: [],
 	},
@@ -133,8 +152,8 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['ps1', 'playstation', 'playstationconsole', 'psx', 'sonyplaystation'],
 		display: 'PlayStation',
 		choices: [
+			C('pcsxrearmed', 'PCSX ReARMed', /pcsx_rearmed|pcsxrearmed/i, 'pcsx_rearmed'),
 			C('beetlepsx', 'Beetle PSX', /beetle_psx|beetlepsx/i),
-			C('pcsxrearmed', 'PCSX ReARMed', /pcsx_rearmed|pcsxrearmed/i),
 		],
 		// The US 1.0 / US 3.9 / Japan bios — the core boots on any one of them.
 		bios: ['scph1001.bin', 'scph5501.bin', 'scph150.bin'],
@@ -142,7 +161,7 @@ export const CORE_MAP: CoreMapEntry[] = [
 	{
 		aliases: ['psp', 'playstationportable', 'pspgo', 'psplit'],
 		display: 'PlayStation Portable',
-		choices: [C('ppsspp', 'PPSSPP', /ppsspp/i)],
+		choices: [C('ppsspp', 'PPSSPP', /ppsspp/i, 'ppsspp')],
 		// PS1 games inside PPSSPP want the PS1 bios too.
 		bios: ['scph5501.bin'],
 	},
@@ -150,8 +169,8 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['dos', 'pcdos'],
 		display: 'DOS',
 		choices: [
-			C('dosboxsvn', 'DOSBox SVN', /dosbox_svn|dosboxsvn/i),
-			C('dosboxpure', 'DOSBox Pure', /dosbox_pure|dosboxpure/i),
+			C('dosboxsvn', 'DOSBox SVN', /dosbox_svn|dosboxsvn/i, 'dosbox_svn'),
+			C('dosboxpure', 'DOSBox Pure', /dosbox_pure|dosboxpure/i, 'dosbox_pure'),
 			C('dosbox', 'DOSBox', /dosbox/i),
 		],
 		bios: [],
@@ -160,8 +179,8 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['arcade', 'arcadegames', 'mame'],
 		display: 'Arcade',
 		choices: [
-			C('fbneo', 'FBNeo', /fbneo/i),
-			C('mame2003plus', 'MAME 2003 Plus', /mame2003/i),
+			C('fbneo', 'FBNeo', /fbneo/i, 'fbneo'),
+			C('mame2003plus', 'MAME 2003 Plus', /mame2003/i, 'mame2003_plus'),
 			C('mame', 'MAME', /mame/),
 		],
 		bios: [],
@@ -170,9 +189,9 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['genesis', 'megadrive', 'segagenesis', 'segamegadrive', 'segagenesismegadrive'],
 		display: 'Sega Genesis / Mega Drive',
 		choices: [
-			C('genesisplusgx', 'Genesis Plus GX', /genesis_plus_gx|genesisplusgx/i),
-			C('picodrive', 'PicoDrive', /picodrive/i),
-			C('gearsystem', 'GearSystem', /gearsystem/i),
+			C('genesisplusgx', 'Genesis Plus GX', /genesis_plus_gx|genesisplusgx/i, 'genesis_plus_gx'),
+			C('picodrive', 'PicoDrive', /picodrive/i, 'picodrive'),
+			C('gearsystem', 'GearSystem', /gearsystem/i, 'gearsystem'),
 		],
 		bios: [],
 	},
@@ -180,8 +199,8 @@ export const CORE_MAP: CoreMapEntry[] = [
 		aliases: ['sms', 'mastersystem', 'mastersystemjr', 'segamastersystem'],
 		display: 'Sega Master System',
 		choices: [
-			C('genesisplusgx', 'Genesis Plus GX', /genesis_plus_gx|genesisplusgx/i),
-			C('picodrive', 'PicoDrive', /picodrive/i),
+			C('genesisplusgx', 'Genesis Plus GX', /genesis_plus_gx|genesisplusgx/i, 'genesis_plus_gx'),
+			C('picodrive', 'PicoDrive', /picodrive/i, 'picodrive'),
 		],
 		bios: [],
 	},
@@ -200,7 +219,7 @@ export const CORE_MAP: CoreMapEntry[] = [
 	{
 		aliases: ['7800', 'atari7800'],
 		display: 'Atari 7800',
-		choices: [C('prosystem', 'ProSystem', /prosystem/i)],
+		choices: [C('prosystem', 'ProSystem', /prosystem/i, 'prosystem')],
 		bios: [],
 	},
 	{

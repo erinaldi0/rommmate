@@ -32,6 +32,11 @@ const KEY_PAIRING_TOKEN = 'rommate.pairingToken';
 const KEY_KEYBOARD = 'rommate.keyboard';
 const KEY_AUTO_SYNC = 'rommate.autoSync';
 const KEY_CORE_CHOICES = 'rommate.coreChoices';
+const KEY_RA_ENABLED = 'rommate.raEnabled';
+const KEY_RA_USERNAME = 'rommate.raUsername';
+const KEY_RA_PASSWORD = 'rommate.raPassword';
+const KEY_RA_HARDCORE = 'rommate.raHardcore';
+const KEY_RA_UNOFFICIAL_ROMS = 'rommate.raUnofficialRoms';
 
 /**
  * Which keyboard opens for the text fields.
@@ -99,6 +104,24 @@ export interface Config {
 	 * (recommended) choice.
 	 */
 	coreChoices?: Record<string, string>;
+	/**
+	 * Enable RetroAchievements in RetroArch. When on, the app writes the
+	 * `cheevos_*` options into `retroarch.cfg` before every launch, and
+	 * RetroArch's own RAClient handles detection and syncing of
+	 * achievements from there. Absent = off.
+	 */
+	raEnabled?: boolean;
+	/** RetroArch's `cheevos_username` — the RA account to track under. */
+	raUsername?: string;
+	/** RetroArch's `cheevos_password` (stored on the SD, as RetroArch does). */
+	raPassword?: string;
+	/** `cheevos_hardcore` — no save states / cheats / rewind. Default off. */
+	raHardcore?: boolean;
+	/**
+	 * `cheevos_unofficial_roms_allowed` — track even ROMs RA's database does
+	 * not recognise. Default off (RA blocks tracking for unmatched dumps).
+	 */
+	raUnofficialRoms?: boolean;
 }
 
 /** Validate an untrusted value as the per-platform core picks. */
@@ -147,6 +170,12 @@ function configFromJson(raw: string): Config | null {
 			// The default is on: the stored value only matters when off.
 			autoSync: o.autoSync !== false,
 			coreChoices: coreChoicesFrom(o.coreChoices),
+			// The RA defaults are off: each only matters when explicitly set.
+			raEnabled: o.raEnabled === true,
+			raUsername: str(o.raUsername),
+			raPassword: str(o.raPassword),
+			raHardcore: o.raHardcore === true,
+			raUnofficialRoms: o.raUnofficialRoms === true,
 		};
 	} catch {
 		return null;
@@ -186,6 +215,11 @@ export function loadConfig(): Config {
 			// The default is on: the stored value only matters when off.
 			autoSync: autoSync !== 'false',
 			coreChoices: coreChoicesFrom(ls?.getItem(KEY_CORE_CHOICES) ?? ''),
+			raEnabled: ls?.getItem(KEY_RA_ENABLED) === 'true',
+			raUsername: ls?.getItem(KEY_RA_USERNAME) ?? '',
+			raPassword: ls?.getItem(KEY_RA_PASSWORD) ?? '',
+			raHardcore: ls?.getItem(KEY_RA_HARDCORE) === 'true',
+			raUnofficialRoms: ls?.getItem(KEY_RA_UNOFFICIAL_ROMS) === 'true',
 		};
 		// First boot on a device that only ever had the Save-Data copy:
 		// promote it to the SD so the profile-less launches keep it too.
@@ -228,6 +262,11 @@ export function saveConfig(cfg: Config): void {
 		keyboard: cfg.keyboard ?? DEFAULT_KEYBOARD,
 		autoSync: cfg.autoSync !== false,
 		coreChoices: cfg.coreChoices,
+		raEnabled: cfg.raEnabled === true,
+		raUsername: sanitize(cfg.raUsername ?? ''),
+		raPassword: sanitize(cfg.raPassword ?? ''),
+		raHardcore: cfg.raHardcore === true,
+		raUnofficialRoms: cfg.raUnofficialRoms === true,
 	};
 	// Primary: the SD file (no profile or save-data dependency). A
 	// power-cut mid-write costs the file — the localStorage copy below
@@ -258,6 +297,13 @@ export function saveConfig(cfg: Config): void {
 			// The pick is the least-critical field: losing it costs one
 			// re-pick at most, not the session.
 		}
+		// The RA settings: the SD file above is the authoritative copy, so
+		// these are best-effort too (a lost password just costs one re-entry).
+		localStorage?.setItem(KEY_RA_ENABLED, clean.raEnabled ? 'true' : 'false');
+		localStorage?.setItem(KEY_RA_USERNAME, clean.raUsername);
+		localStorage?.setItem(KEY_RA_PASSWORD, clean.raPassword);
+		localStorage?.setItem(KEY_RA_HARDCORE, clean.raHardcore ? 'true' : 'false');
+		localStorage?.setItem(KEY_RA_UNOFFICIAL_ROMS, clean.raUnofficialRoms ? 'true' : 'false');
 	} catch {
 		// Save Data is unavailable (or full) — the SD copy above is what
 		// the next launch reads.

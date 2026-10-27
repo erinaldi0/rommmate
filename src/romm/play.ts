@@ -19,6 +19,7 @@
  * `RommClient`; these functions only know the route shapes.
  */
 import type { RommClient } from './client';
+import { log } from '../log';
 
 // ── shapes the app works with ───────────────────────────────────────────────
 
@@ -574,7 +575,17 @@ export async function negotiateSync(
 			{ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
 			signal,
 		);
-		if (!res.ok) return null;
+		if (!res.ok) {
+			// Log the server's complaint: a bare `null` here reads as "sync
+			// negotiation failed" with no way to see WHICH field the schema
+			// rejected (the 422's `loc`/`msg` is the whole diagnosis).
+			try {
+				log('error', `sync negotiate: HTTP ${res.status} — ${(await res.text()).slice(0, 600)}`);
+			} catch {
+				log('error', `sync negotiate: HTTP ${res.status}`);
+			}
+			return null;
+		}
 		const json = (await res.json()) as Record<string, unknown>;
 		const sessionId = asNumber(json['session_id']);
 		const rawOps = Array.isArray(json['operations']) ? (json['operations'] as unknown[]) : [];

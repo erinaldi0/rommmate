@@ -549,8 +549,10 @@ const DAY = 86_400_000;
  *
  * The library also carries the richer state the dashboard browses by:
  * play times (every 9th game a few hours ago, every 13th a few days ago),
- * favourites (every 7th), staggered addition dates, and two multi-disc
- * releases (the two Chrono Trigger copies, and Final Fantasy VI + disc 2).
+ * favourites (every 7th), staggered addition dates, and three multi-disc
+ * releases (the two Chrono Trigger copies, Final Fantasy VI + disc 2, and
+ * an identified Legend of Dragoon whose second disc holds the smaller rom
+ * id — the ordering edge the grouping must survive).
  */
 export const MOCK_GAMES: RommGame[] = ENTRIES.map((entry, i) => {
 	const id = i + 1;
@@ -574,6 +576,11 @@ export const MOCK_GAMES: RommGame[] = ENTRIES.map((entry, i) => {
 		lastPlayedAt: id % 9 === 0 ? ago((id % 5 + 1) * HOUR) : id % 13 === 0 ? ago((id % 7 + 1) * DAY) : '',
 		createdAt: ago(id * DAY),
 		favorite: id % 7 === 0,
+		// Every third mock game is "matched to RetroAchievements" so the
+		// detail screen's badge is visible in demo mode. The ids are
+		// arbitrary: demo mode has no live catalog to fetch a real set from.
+		raId: id % 3 === 0 ? 9000 + id : 0,
+		raHash: id % 3 === 0 ? `mock-ra-${id}` : '',
 	};
 });
 
@@ -620,10 +627,68 @@ if (ffvi !== undefined) {
 		lastPlayedAt: '',
 		createdAt: ago(disc2Id * DAY),
 		favorite: false,
+		// Same release, same RA match (RA keys a game once, not per disc).
+		raId: ffvi.raId,
+		raHash: '',
 	};
 	ffvi.fsName = `${ffvi.name} (Disc 1).zip`;
 	ffvi.siblings = disc2.siblings;
 	MOCK_GAMES.push(disc2);
+}
+
+// A release the server has *identified*: every disc wears the release name,
+// so the server's sort key is a tie for the whole release — the grouping
+// must order the discs by the file name's disc number, never by rom id.
+// The second disc deliberately carries the *smaller* id (it was imported
+// first), the arrangement that used to hand the picker's "Disc 1" row to
+// the wrong disc and download the wrong file. No main disc is designated,
+// so the default disc falls to the sort order too — the bug's full blast
+// radius, reproducible in demo mode.
+{
+	const lodName = 'Legend of Dragoon, The (Italy)';
+	const lodSort = 'legend of dragoon, the (italy)'; // the server's shared key
+	const lod2Id = ENTRIES.length + 2; // Disc 2: the smaller id
+	const lod1Id = ENTRIES.length + 3; // Disc 1: the larger id
+	const lod = (id: number, disc: number): RommGame => {
+		const fsName = `${lodName} (Disc ${disc})`;
+		return {
+			files: [
+				{
+					fileName: `${fsName}.bin`,
+					sizeBytes: 900_000_000,
+					md5Hash: `mock-${id}`,
+					extension: 'bin',
+					topLevel: true,
+					memberCount: 1,
+				},
+			],
+			hasMultipleFiles: false,
+			md5Hash: `mock-${id}`,
+			id,
+			name: lodName,
+			platformId: 0,
+			platform: 'PlayStation 2',
+			coverUrl: '',
+			screenshotUrl: '',
+			summary: 'An action-adventure about a war between man and the gods, told in two discs.',
+			releaseDate: '1999-12-12',
+			genres: ['Action'],
+			sizeBytes: 900_000_000,
+			gameKey: lod2Id,
+			siblings: [
+				sib(lod2Id, lodSort, `${lodName} (Disc 2)`, lodName, false),
+				sib(lod1Id, lodSort, `${lodName} (Disc 1)`, lodName, false),
+			],
+			isMain: false,
+			fsName,
+			lastPlayedAt: '',
+			createdAt: ago(id * DAY),
+			favorite: false,
+			raId: 0,
+			raHash: '',
+		};
+	};
+	MOCK_GAMES.push(lod(lod2Id, 2), lod(lod1Id, 1));
 }
 
 /** Mock saved collections for the dashboard's last row. */

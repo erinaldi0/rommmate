@@ -33,7 +33,11 @@ export interface RommSibling {
 	id: number;
 	/** Disc ordering key provided by the server (empty when it gave none). */
 	sort: string;
-	/** File name, for display in the disc picker. */
+	/**
+	 * File name without its extension, tags included (`(Italy) (Disc 2)`) —
+	 * the disc's identity in the disc picker. The tag-stripped name is the
+	 * fallback (older builds), which loses the disc marker.
+	 */
 	fsName: string;
 	/** Identified name, when the server knows one. */
 	name: string;
@@ -70,7 +74,12 @@ export interface RommGame {
 	siblings: RommSibling[];
 	/** True when this rom is the user-designated main disc. */
 	isMain: boolean;
-	/** File name (no extension) — the disc's identity in the picker. */
+	/**
+	 * File name without its extension, tags included (`(Italy) (Disc 2)`) —
+	 * the disc's identity in the picker and the source of its disc number.
+	 * The tag-stripped name is the fallback (older builds), which loses the
+	 * disc marker; the full name (with extension) the last resort.
+	 */
 	fsName: string;
 	/** ISO timestamp of the last play, or "" when never played. */
 	lastPlayedAt: string;
@@ -91,6 +100,82 @@ export interface RommGame {
 	files: RommRomFile[];
 	/** True when the server marks the rom as multi-file (multi-part game). */
 	hasMultipleFiles: boolean;
+	/**
+	 * The RetroAchievements game id the server matched this rom to, or 0
+	 * when it has no match (a non-official / unrecognised dump). This is the
+	 * cheap "is this game RA-compatible" signal; the full achievement set is
+	 * fetched on demand (the achievements screen) so the list walk stays lean.
+	 */
+	raId: number;
+	/** The RA file hash the server matched against, or '' when none. */
+	raHash: string;
+}
+
+/**
+ * The user's RetroAchievements identity + progress, as RomM reports it on
+ * the current user (`GET /api/users/me`). All of it is null-tolerant: a
+ * user who has not linked an RA account in RomM has no username and no
+ * progression, and older servers have no RA routes at all.
+ */
+export interface RomRAchievement {
+	/** The RA achievement id (numeric; the server sometimes strings it). */
+	id: number;
+	title: string;
+	description: string;
+	/** Achievement points. */
+	points: number;
+	/** How many players worldwide have unlocked it (softcore). */
+	numAwarded: number;
+	/** How many players have unlocked it in hardcore. */
+	numAwardedHardcore: number;
+	/** Absolute URL to the unlocked badge, or '' when the server gave none. */
+	badgeUrl: string;
+	/** Absolute URL to the locked badge, or '' when none. */
+	badgeUrlLocked: string;
+	/** Intra-set ordering (the published order). */
+	displayOrder: number;
+}
+
+/** One achievement the user has actually unlocked, for one RA game. */
+export interface RomRAEarnedAchievement {
+	/** The achievement id the server strings — compared as a string. */
+	id: string;
+	/** ISO date the softcore unlock landed. */
+	date: string;
+	/** ISO date of the hardcore unlock, or null when there is none. */
+	dateHardcore: string | null;
+}
+
+/** The user's progress on one RA game (a `ra_progression.results` entry). */
+export interface RomRAGameProgression {
+	/** The RA game id this progress belongs to (joins to `RommGame.raId`). */
+	romRaId: number;
+	/** The game's total published points, or null. */
+	maxPossible: number | null;
+	/** How many achievements the user has unlocked (softcore), or null. */
+	numAwarded: number | null;
+	/** How many the user has unlocked in hardcore, or null. */
+	numAwardedHardcore: number | null;
+	/** ISO date of the most recent unlock, or null. */
+	mostRecentAwardedDate: string | null;
+	/** The user's highest award kind for the game, or null. */
+	highestAwardKind: string | null;
+	/** The specific achievements the user earned. */
+	earned: RomRAEarnedAchievement[];
+}
+
+/** The user's whole RetroAchievements progression (from RomM). */
+export interface RomRAProgression {
+	/** The server's count of tracked games. */
+	total: number;
+	results: RomRAGameProgression[];
+}
+
+/** The current user's id + RA identity + progression (one `GET /api/users/me`). */
+export interface RomRATag {
+	userId: number;
+	raUsername: string | null;
+	progression: RomRAProgression | null;
 }
 
 /**
@@ -120,10 +205,11 @@ export interface RommTitle {
 	 */
 	knownDiscs: number;
 	/**
-	 * For each disc in `discs`: its 1-based position within the whole
-	 * release (stubs included). It equals the disc's own index plus one
-	 * for a full title, and keeps the badge naming the *same* disc in a
-	 * partial one (a favourites walk) as in the rows that hold it all.
+	 * For each disc in `discs`: its 1-based number within the whole
+	 * release — the disc number the file name carries when it does
+	 * (`(Disc 2)` → 2, so a partial title still names the *same* disc a
+	 * full walk does), else the disc's 1-based position with stubs
+	 * counted. It is what the badge and the disc pager print.
 	 */
 	discReleaseSlots: number[];
 	/** Index (into `discs`) of the disc the title represents by default. */
